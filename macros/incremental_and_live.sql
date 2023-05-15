@@ -324,7 +324,7 @@
 
         -- column consistents (check comparison columns)
         {% set is_column_changed = 
-                is_table_change (   database = none, 
+                dbt_improvado_utils.is_table_change (   database = none, 
                                     schema = model.schema, 
                                     identifier_check = this.identifier ~ '_history', 
                                     type = 'table', 
@@ -337,13 +337,13 @@
         {{ log( "\n\n************** history **************\n\n", not silence_mode) }} 
         -- get_or_create history relation
             {% set target_history_relation_exists, target_history_relation = 
-                    get_or_create_or_update_relation (  database = none, 
+                    dbt_improvado_utils.get_or_create_or_update_relation (  database = none, 
                                                         schema = model.schema, 
                                                         identifier = this.identifier ~ '_history', 
                                                         type = 'table', 
                                                         update = is_column_changed, 
                                                         temporary = False, 
-                                                        sql = select_limit_0(sql), 
+                                                        sql = dbt_improvado_utils.select_limit_0(sql), 
                                                         debug_mode = debug_mode, 
                                                         silence_mode = silence_mode) %}
             {% if not target_history_relation.is_table %}
@@ -379,10 +379,10 @@
         ---- interval counts calculation 
 
             {% set max_history_timestamp = 
-                    fixed_now - get_interval (value = interval_fluctuation, unit = time_unit_name) %}
+                    fixed_now - dbt_improvado_utils.get_interval (value = interval_fluctuation, unit = time_unit_name) %}
 
             {% set interval_count_tmp = 
-                    dateDiff (startdate = start_time, enddate = max_history_timestamp, unit = time_unit_name)
+                    dbt_improvado_utils.dateDiff (startdate = start_time, enddate = max_history_timestamp, unit = time_unit_name)
                     - interval_fluctuation %}
 
             {% set parts_count = 
@@ -391,7 +391,7 @@
             {{ log( "Interval counts calculation... | parts_count = " ~ parts_count, not silence_mode) }} 
         --
         ---- last incremental interval insert right border limit calculation
-            {% set max_history_allowed_timestamp = fixed_now - get_interval ( value = interval_fluctuation, unit = time_unit_name) %}
+            {% set max_history_allowed_timestamp = fixed_now - dbt_improvado_utils.get_interval ( value = interval_fluctuation, unit = time_unit_name) %}
 
             {{ log( "Last incremental interval insert right border limit calculation... | max_history_allowed_timestamp = " 
                     ~ max_history_allowed_timestamp, debug_mode) }}
@@ -400,7 +400,7 @@
             {% for index in range(parts_count + 2) %}
                 -- inserting intervals list calculation
                 {% set left_where_condition, right_where_condition, left_having_condition, right_having_condition = 
-                        get_interval_list ( intervals_offset = index*materialized_window, 
+                        dbt_improvado_utils.get_interval_list ( intervals_offset = index*materialized_window, 
                                             time_unit_name = time_unit_name, 
                                             start_time = start_time, 
                                             interval_fluctuation = interval_fluctuation, 
@@ -441,13 +441,13 @@
         -- update or create history relation
 
             {% set target_unfinished_relation_exists, target_unfinished_relation = 
-                    get_or_create_or_update_relation (  database = none, 
+                    dbt_improvado_utils.get_or_create_or_update_relation (  database = none, 
                                                         schema = model.schema, 
                                                         identifier = this.identifier ~ '_unfinished', 
                                                         type = 'table', 
                                                         update = True, 
                                                         temporary = False, 
-                                                        sql = select_limit_0(sql), 
+                                                        sql = dbt_improvado_utils.select_limit_0(sql), 
                                                         debug_mode = debug_mode, 
                                                         silence_mode = silence_mode) %}
 
@@ -459,7 +459,7 @@
         -- calculation prewhere for unfinished (left and right borders of interval)
 
             {% set left_unfinished_pre_where_timestamp = 
-                    fixed_now - get_interval (value = interval_fluctuation * 2, unit = time_unit_name) %}
+                    fixed_now - dbt_improvado_utils.get_interval (value = interval_fluctuation * 2, unit = time_unit_name) %}
             {% set right_unfinished_pre_where_timestamp = fixed_now %}
         --
         -- post having condition (max_history_timestamp for having condition)
@@ -501,10 +501,10 @@
             -- pre-where live view condition (left and right borders of interval)
 
                 {% set left_live_pre_where_timestamp = 
-                        right_unfinished_pre_where_timestamp - get_interval (value = interval_fluctuation * 2, unit = time_unit_name) %}
+                        right_unfinished_pre_where_timestamp - dbt_improvado_utils.get_interval (value = interval_fluctuation * 2, unit = time_unit_name) %}
 
                 {% set right_live_pre_where_timestamp = 
-                        fixed_now.replace( hour=0, minute=0, second=0, microsecond=0 ) + get_interval (value = 365, unit = 'day') %} 
+                        fixed_now.replace( hour=0, minute=0, second=0, microsecond=0 ) + dbt_improvado_utils.get_interval (value = 365, unit = 'day') %} 
             --
             -- [SQL for]: create _live_ view
 
@@ -522,7 +522,7 @@
             --
             -- update or create live view relation
                 {% set target_live_relation_exists, target_live_relation = 
-                        get_or_create_or_update_relation (  database = none, 
+                        dbt_improvado_utils.get_or_create_or_update_relation (  database = none, 
                                                             schema = model.schema, 
                                                             identifier = this.identifier ~ '_live', 
                                                             type = 'view', 
@@ -549,7 +549,7 @@
         --
         -- update or create Output view relation
             {% set target_output_relation_exists, target_output_relation =
-                    get_or_create_or_update_relation (  database = none, 
+                    dbt_improvado_utils.get_or_create_or_update_relation (  database = none, 
                                                         schema = model.schema, 
                                                         identifier = this.identifier, 
                                                         type = 'view', 
@@ -594,13 +594,13 @@
 
         -- create tmp table for comparison columns
        {% set check_relation_exists, check_relation = 
-                get_or_create_or_update_relation (  database = database, 
+                dbt_improvado_utils.get_or_create_or_update_relation (  database = database, 
                                                     schema = schema, 
                                                     identifier = identifier_check~'_consistent_tmp', 
                                                     type = type, 
                                                     update = False, 
                                                     temporary = False, 
-                                                    sql = select_limit_0(actual_sql), 
+                                                    sql = dbt_improvado_utils.select_limit_0(actual_sql), 
                                                     debug_mode = debug_mode, 
                                                     silence_mode = silence_mode) %}
         
@@ -669,10 +669,10 @@
 
 {% macro get_interval_list (intervals_offset, time_unit_name, start_time, interval_fluctuation, materialized_window ) %}
 
-    {% set interval_start           = start_time        + get_interval ( value = intervals_offset, unit = time_unit_name) %}
-    {% set right_where_condition    = interval_start    + get_interval ( value = interval_fluctuation + materialized_window , unit = time_unit_name) %}
-    {% set left_where_condition     = interval_start    - get_interval ( value = interval_fluctuation, unit = time_unit_name) %}
-    {% set right_having_condition   = interval_start    + get_interval ( value = materialized_window, unit = time_unit_name) %}
+    {% set interval_start           = start_time        + dbt_improvado_utils.get_interval ( value = intervals_offset, unit = time_unit_name) %}
+    {% set right_where_condition    = interval_start    + dbt_improvado_utils.get_interval ( value = interval_fluctuation + materialized_window , unit = time_unit_name) %}
+    {% set left_where_condition     = interval_start    - dbt_improvado_utils.get_interval ( value = interval_fluctuation, unit = time_unit_name) %}
+    {% set right_having_condition   = interval_start    + dbt_improvado_utils.get_interval ( value = materialized_window, unit = time_unit_name) %}
     {% set left_having_condition    = interval_start %}
 
     {{return ([left_where_condition, right_where_condition, left_having_condition, right_having_condition])}}
