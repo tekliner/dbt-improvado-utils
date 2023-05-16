@@ -408,7 +408,7 @@
                 
                 -- inserting intervals list calculation
                 {% set target_history_insert_query = 
-                        adapter.dispatch('insert_as')(  sql = sql,
+                        adapter.dispatch('dbt_improvado_utils.insert_as')(  sql = sql,
                                                         target_relation = target_history_relation,
                                                         input_relation = input_relation, 
                                                         input_column = input_timestamp_column, 
@@ -471,7 +471,7 @@
         --
         -- unfinished insert query 
             {% set target_unfinished_insert_query = 
-                    adapter.dispatch('insert_as')(  sql = sql,
+                    adapter.dispatch('dbt_improvado_utils.insert_as')(  sql = sql,
                                                     target_relation = target_unfinished_relation,
                                                     input_relation = input_relation, 
                                                     input_column = input_timestamp_column, 
