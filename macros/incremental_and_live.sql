@@ -23,7 +23,7 @@
     {% macro default__insert_as (sql, target_relation, input_relation, input_column, output_column, max_having_right, left_where, right_where, left_having, right_having, debug_mode) %}
         
         {% set inserting_sql = 
-                adapter.dispatch('get_sql_for_insert')( sql, input_relation, input_column, output_column, max_having_right, left_where, right_where, left_having, right_having, debug_mode) %}
+                adapter.dispatch("get_sql_for_insert", macro_namespace="dbt_improvado_utils")( sql, input_relation, input_column, output_column, max_having_right, left_where, right_where, left_having, right_having, debug_mode) %}
 
         INSERT INTO {{target_relation}} {{inserting_sql}}
 
@@ -107,7 +107,7 @@
     {% macro bigquery__insert_as (sql, target_relation, input_relation, input_column, output_column, max_having_right, left_where, right_where, left_having, right_having, debug_mode) %}
         
         {% set inserting_sql = 
-                adapter.dispatch('get_sql_for_insert')( sql, input_relation, input_column, output_column, max_having_right, left_where, right_where, left_having, right_having, debug_mode) %}
+                adapter.dispatch("get_sql_for_insert", macro_namespace="dbt_improvado_utils")( sql, input_relation, input_column, output_column, max_having_right, left_where, right_where, left_having, right_having, debug_mode) %}
 
         INSERT INTO {{target_relation}} {{inserting_sql}}
 
@@ -192,7 +192,7 @@
     {% macro clickhouse__insert_as (sql, target_relation, input_relation, input_column, output_column, max_having_right, left_where, right_where, left_having, right_having, debug_mode) %}
         
         {% set inserting_sql = 
-                adapter.dispatch('get_sql_for_insert')( sql, input_relation, input_column, output_column, max_having_right, left_where, right_where, left_having, right_having, debug_mode) %}
+                adapter.dispatch("get_sql_for_insert", macro_namespace="dbt_improvado_utils")( sql, input_relation, input_column, output_column, max_having_right, left_where, right_where, left_having, right_having, debug_mode) %}
 
         INSERT INTO {{target_relation}} {{inserting_sql}}
 
@@ -361,7 +361,7 @@
             -- if target_history_relation existed initially
             {% if target_history_relation_exists %}
                 {% set last_history_timestamp =
-                        adapter.dispatch('get_max_date_time_in_table')( target_history_relation, output_session_end_column) %}
+                        adapter.dispatch("get_max_date_time_in_table", macro_namespace="dbt_improvado_utils")( target_history_relation, output_session_end_column) %}
 
                 {% set start_time_ms = [last_history_timestamp, start_time_settings_ms] | max %}
 
@@ -465,7 +465,7 @@
         -- post having condition (max_history_timestamp for having condition)
 
             {% set max_fact_history_timestamp =
-                    adapter.dispatch('get_max_date_time_in_table')( target_history_relation, output_session_end_column) %}   
+                    adapter.dispatch("get_max_date_time_in_table", macro_namespace="dbt_improvado_utils")( target_history_relation, output_session_end_column) %}   
 
             {{ log( "max_history_timestamp for having condition: " ~ max_fact_history_timestamp, debug_mode) }} 
         --
@@ -509,7 +509,7 @@
             -- [SQL for]: create _live_ view
 
                 {% set target_live_create_query = 
-                        adapter.dispatch('get_sql_for_insert')( sql = sql, 
+                        adapter.dispatch("get_sql_for_insert", macro_namespace="dbt_improvado_utils")( sql = sql, 
                                                                 input_relation = input_relation, 
                                                                 input_column = input_timestamp_column, 
                                                                 output_column = output_session_end_column, 
@@ -542,7 +542,7 @@
         {{ log( "\n\n************** output **************\n\n", not silence_mode) }} 
         -- [SQL for]: create output view + remove ids finished after unfinished materilization
             {% set output_sql = 
-                    adapter.dispatch('union_all_relation')( sections_set,
+                    adapter.dispatch("union_all_relation", macro_namespace="dbt_improvado_utils")( sections_set,
                                                             output_id_column,
                                                             order_by,
                                                             unfinished_changes_filter) %}
@@ -702,9 +702,9 @@
 
             {% call statement( 'Create target ' ~ identifier ~ ' ' ~ type ) %}
                 {% if type == "table" %}
-                    {{adapter.dispatch('create_table_as')( temporary = temporary, relation = relation, sql = sql)}}   
+                    {{adapter.dispatch("create_table_as", macro_namespace="dbt_improvado_utils")( temporary = temporary, relation = relation, sql = sql)}}   
                 {% else %}
-                    {{adapter.dispatch('create_view_as')( relation = relation, sql = sql)}}
+                    {{adapter.dispatch("create_view_as", macro_namespace="dbt_improvado_utils")( relation = relation, sql = sql)}}
                 {% endif %}
             {% endcall %}
 
