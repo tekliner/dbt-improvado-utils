@@ -702,9 +702,9 @@
 
             {% call statement( 'Create target ' ~ identifier ~ ' ' ~ type ) %}
                 {% if type == "table" %}
-                    {{adapter.dispatch("create_table_as", macro_namespace="dbt_improvado_utils")( temporary = temporary, relation = relation, sql = sql)}}   
+                    {{adapter.dispatch('create_table_as')( temporary = temporary, relation = relation, sql = sql)}}   
                 {% else %}
-                    {{adapter.dispatch("create_view_as", macro_namespace="dbt_improvado_utils")( relation = relation, sql = sql)}}
+                    {{adapter.dispatch('create_view_as')( relation = relation, sql = sql)}}
                 {% endif %}
             {% endcall %}
 
