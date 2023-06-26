@@ -279,7 +279,7 @@
 
 -----------------------
 
-{% materialization incremental_and_live_fix   %}
+{% materialization incremental_and_live   %}
 
     -- input data fields
         {%  set input_model                 = config.get('input_model') -%}
