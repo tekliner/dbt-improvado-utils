@@ -298,6 +298,7 @@
         {%  set order_by                    = config.get('order_by') %}
 
         {%  set life_section                = config.get('life_section', default = True) %}
+        {%  set unfinished_section          = config.get('unfinished_section', default = True) %}
         {%  set unfinished_changes_filter   = config.get('unfinished_changes_filter', default = True) %}
 
         {%  set debug_mode                  = config.get('debug_mode', default = False) %}
@@ -437,61 +438,65 @@
         --
     --
     -- unfinished (not_final) materialized table
-        {{ log( "\n\n************** unfinished **************\n\n", not silence_mode) }} 
-        -- update or create history relation
+        {% if unfinished_section %}
+        
+            {{ log( "\n\n************** unfinished **************\n\n", not silence_mode) }} 
+            -- update or create history relation
 
-            {% set target_unfinished_relation_exists, target_unfinished_relation = 
-                    dbt_improvado_utils.get_or_create_or_update_relation (  database = none, 
-                                                        schema = model.schema, 
-                                                        identifier = this.identifier ~ '_unfinished', 
-                                                        type = 'table', 
-                                                        update = True, 
-                                                        temporary = False, 
-                                                        sql = dbt_improvado_utils.select_limit_0(sql), 
-                                                        debug_mode = debug_mode, 
-                                                        silence_mode = silence_mode) %}
+                {% set target_unfinished_relation_exists, target_unfinished_relation = 
+                        dbt_improvado_utils.get_or_create_or_update_relation (  database = none, 
+                                                            schema = model.schema, 
+                                                            identifier = this.identifier ~ '_unfinished', 
+                                                            type = 'table', 
+                                                            update = True, 
+                                                            temporary = False, 
+                                                            sql = dbt_improvado_utils.select_limit_0(sql), 
+                                                            debug_mode = debug_mode, 
+                                                            silence_mode = silence_mode) %}
 
-        --
-        -- append unfinished relation to section set
-            {%- do sections_arr.append(target_unfinished_relation) -%}
-            {%- do sections_set.update({'unfinished': target_unfinished_relation}) -%}
-        --
-        -- calculation prewhere for unfinished (left and right borders of interval)
+            --
+            -- append unfinished relation to section set
+                {%- do sections_arr.append(target_unfinished_relation) -%}
+                {%- do sections_set.update({'unfinished': target_unfinished_relation}) -%}
+            --
+            -- calculation prewhere for unfinished (left and right borders of interval)
 
-            {% set left_unfinished_pre_where_timestamp = 
-                    fixed_now - dbt_improvado_utils.get_interval (value = interval_fluctuation * 2, unit = time_unit_name) %}
-            {% set right_unfinished_pre_where_timestamp = fixed_now %}
-        --
-        -- post having condition (max_history_timestamp for having condition)
+                {% set left_unfinished_pre_where_timestamp = 
+                        fixed_now - dbt_improvado_utils.get_interval (value = interval_fluctuation * 2, unit = time_unit_name) %}
+                {% set right_unfinished_pre_where_timestamp = fixed_now %}
+            --
+            -- post having condition (max_history_timestamp for having condition)
 
-            {% set max_fact_history_timestamp =
-                    adapter.dispatch("get_max_date_time_in_table", macro_namespace="dbt_improvado_utils")( target_history_relation, output_session_end_column) %}   
+                {% set max_fact_history_timestamp =
+                        adapter.dispatch("get_max_date_time_in_table", macro_namespace="dbt_improvado_utils")( target_history_relation, output_session_end_column) %}   
 
-            {{ log( "max_history_timestamp for having condition: " ~ max_fact_history_timestamp, debug_mode) }} 
-        --
-        -- unfinished insert query 
-            {% set target_unfinished_insert_query = 
-                    adapter.dispatch("insert_as", macro_namespace="dbt_improvado_utils")(  sql = sql,
-                                                    target_relation = target_unfinished_relation,
-                                                    input_relation = input_relation, 
-                                                    input_column = input_timestamp_column, 
-                                                    output_column = output_session_end_column,
-                                                    max_having_right = right_unfinished_pre_where_timestamp,
-                                                    left_where = left_unfinished_pre_where_timestamp, 
-                                                    right_where = right_unfinished_pre_where_timestamp, 
-                                                    left_having = max_fact_history_timestamp, 
-                                                    right_having = right_unfinished_pre_where_timestamp,
-                                                    debug_mode = debug_mode)%}                                                          
-            
-            {{ log( "INSERT to : " ~ target_unfinished_relation, not silence_mode) }}
-            {{ log( "left_where_condition | right_where_condition | left_having_condition | right_having_condition", not silence_mode) }}
+                {{ log( "max_history_timestamp for having condition: " ~ max_fact_history_timestamp, debug_mode) }} 
+            --
+            -- unfinished insert query 
+                {% set target_unfinished_insert_query = 
+                        adapter.dispatch("insert_as", macro_namespace="dbt_improvado_utils")(  sql = sql,
+                                                        target_relation = target_unfinished_relation,
+                                                        input_relation = input_relation, 
+                                                        input_column = input_timestamp_column, 
+                                                        output_column = output_session_end_column,
+                                                        max_having_right = right_unfinished_pre_where_timestamp,
+                                                        left_where = left_unfinished_pre_where_timestamp, 
+                                                        right_where = right_unfinished_pre_where_timestamp, 
+                                                        left_having = max_fact_history_timestamp, 
+                                                        right_having = right_unfinished_pre_where_timestamp,
+                                                        debug_mode = debug_mode)%}                                                          
+                
+                {{ log( "INSERT to : " ~ target_unfinished_relation, not silence_mode) }}
+                {{ log( "left_where_condition | right_where_condition | left_having_condition | right_having_condition", not silence_mode) }}
 
-            {% call statement(  'append unfinished rows to target') -%}
-                {{ target_unfinished_insert_query }}  
-            {%- endcall -%}
+                {% call statement(  'append unfinished rows to target') -%}
+                    {{ target_unfinished_insert_query }}  
+                {%- endcall -%}
 
-            {{ log( left_unfinished_pre_where_timestamp ~ "  | " ~ right_unfinished_pre_where_timestamp ~ "   | " ~ 
-                    right_unfinished_pre_where_timestamp ~ "   | " ~ right_unfinished_pre_where_timestamp, not silence_mode) }}
+                {{ log( left_unfinished_pre_where_timestamp ~ "  | " ~ right_unfinished_pre_where_timestamp ~ "   | " ~ 
+                        right_unfinished_pre_where_timestamp ~ "   | " ~ right_unfinished_pre_where_timestamp, not silence_mode) }}
+       
+        {% endif %}        
         --
     -- 
     -- live view for recent updates
@@ -501,7 +506,7 @@
             -- pre-where live view condition (left and right borders of interval)
 
                 {% set left_live_pre_where_timestamp = 
-                        right_unfinished_pre_where_timestamp - dbt_improvado_utils.get_interval (value = interval_fluctuation * 2, unit = time_unit_name) %}
+                        fixed_now - dbt_improvado_utils.get_interval (value = interval_fluctuation * 2, unit = time_unit_name) %}
 
                 {% set right_live_pre_where_timestamp = 
                         fixed_now.replace( hour=0, minute=0, second=0, microsecond=0 ) + dbt_improvado_utils.get_interval (value = 365, unit = 'day') %} 
@@ -516,7 +521,7 @@
                                                                 max_having_right = right_live_pre_where_timestamp,
                                                                 left_where = left_live_pre_where_timestamp, 
                                                                 right_where = right_live_pre_where_timestamp, 
-                                                                left_having = right_unfinished_pre_where_timestamp, 
+                                                                left_having = fixed_now, 
                                                                 right_having = right_live_pre_where_timestamp,
                                                                 debug_mode = debug_mode)%}  
             --
