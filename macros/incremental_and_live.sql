@@ -244,7 +244,7 @@
         {% set history_section      = ( sections_set.get('history') | as_bool ) %}
         {% set unfinished_section   = ( sections_set.get('unfinished') | as_bool ) %}
         {% set live_section         = ( sections_set.get('live') | as_bool ) %}
-        
+
         {% set output_sql %}
             {% if history_section %}
                 SELECT      *
@@ -252,23 +252,19 @@
             {% endif %}
             {% if unfinished_section %}
                 {% if history_section %} UNION ALL {% endif %}
-                WITH unfinished_and_live_sections AS (
-                    {% if live_section %}
-                    SELECT      *
-                    FROM        {{sections_set.get('live')}}
-                    UNION ALL
-                    {% endif %}
-                    SELECT      *
-                    FROM        {{sections_set.get('unfinished')}}       
-                )
-                SELECT *
-                FROM unfinished_and_live_sections
-                {% if unfinished_changes_filter %}
-                    ORDER BY {{order_by}} DESC
-                    LIMIT 1 BY {{output_id_column}} 
+                SELECT      *
+                FROM        {{sections_set.get('unfinished')}}
+                {% if live_section and unfinished_changes_filter %}
+                    WHERE   {{output_id_column}} not in (
+                                    SELECT   {{output_id_column}}
+                                    FROM    {{sections_set.get('live')}}  )
                 {% endif %}
             {% endif %}
-        
+            {% if live_section %}
+                {% if history_section or unfinished_section %} UNION ALL {% endif %}
+                SELECT      *
+                FROM        {{sections_set.get('live')}}
+            {% endif %}
         {% endset %}
 
         {{ return (output_sql) }}
@@ -545,6 +541,7 @@
     --
     -- Output view. Union: history + not final + live
         {{ log( "\n\n************** output **************\n\n", not silence_mode) }} 
+
         -- [SQL for]: create output view + remove ids finished after unfinished materilization
             {% set output_sql = 
                     adapter.dispatch("union_all_relation", macro_namespace="dbt_improvado_utils")( sections_set,
