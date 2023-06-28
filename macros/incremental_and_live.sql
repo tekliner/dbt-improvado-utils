@@ -250,20 +250,25 @@
                 SELECT      *
                 FROM        {{sections_set.get('history')}}
             {% endif %}
-            {% if unfinished_section %}
+            {% if unfinished_section or live_section  %}
                 {% if history_section %} UNION ALL {% endif %}
-                SELECT      *
-                FROM        {{sections_set.get('unfinished')}}
-                {% if live_section and unfinished_changes_filter %}
-                    WHERE   {{output_id_column}} not in (
-                                    SELECT   {{output_id_column}}
-                                    FROM    {{sections_set.get('live')}}  )
+                WITH unfinished_and_live_sections AS (
+                    {% if live_section %}
+                    SELECT      *
+                    FROM        {{sections_set.get('live')}}
+                    {% endif %}
+                    {% if unfinished_section and live_section %} UNION ALL {% endif %}
+                    {% if unfinished_section %}
+                    SELECT      *
+                    FROM        {{sections_set.get('unfinished')}}
+                    {% endif %}
+                )
+                SELECT *
+                FROM unfinished_and_live_sections
+                {% if unfinished_changes_filter %}
+                    ORDER BY {{order_by}} DESC
+                    LIMIT 1 BY {{output_id_column}}
                 {% endif %}
-            {% endif %}
-            {% if live_section %}
-                {% if history_section or unfinished_section %} UNION ALL {% endif %}
-                SELECT      *
-                FROM        {{sections_set.get('live')}}
             {% endif %}
         {% endset %}
 
