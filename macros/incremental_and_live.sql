@@ -296,6 +296,7 @@
         {%  set interval_fluctuation        = config.get('interval_fluctuation') -%}
         {%  set materialized_window         = config.get('materialized_window') -%}
         {%  set partition_by                = config.get('partition_by') %}
+        {%  set engine                      = config.get('engine') %}
         {%  set order_by                    = config.get('order_by') %}
 
         {%  set life_section                = config.get('life_section', default = True) %}
