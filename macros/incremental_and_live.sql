@@ -306,6 +306,9 @@
         {%  set debug_mode                  = config.get('debug_mode', default = False) %}
         {%  set silence_mode                = config.get('silence_mode', default = False) %}
 
+        {%  set production_schema           = config.get('production_schema',
+            default = var('main_production_schema','internal_analytics')) %}
+
         {%  set fixed_now                   = modules.datetime.datetime.now().replace( microsecond=0 ) %}
 
         {#  {%- set if_grouped_by_time          = config.get('min_group_by_time_interval'  ) -%} #} -- TODO: for models when we use grouping by date it may be needed
@@ -316,9 +319,14 @@
                                 'unfinished': none,
                                 'live'      : none} %}
 
-        {%- if target.schema != 'internal_analytics' -%}
-            {%- set start_time_settings = (modules.datetime.datetime.today().date()- modules.datetime.timedelta(days = dev_days_offset)).isoformat() -%}
-            {%- do log("current target: "~ target.schema ~ "\nsetting short start time due to dev target schema: " ~ start_time_settings ~ "\noriginal value: " ~ config.get('start_time'), not silence_mode) -%}
+        {%- if target.schema == production_schema -%}
+            {%- do log("Starting build to production schema: "~ target.schema, not silence_mode) -%}
+        {%- else -%}    
+            {%- set start_time_settings = (modules.datetime.datetime.today().date()-
+                modules.datetime.timedelta(days = dev_days_offset)).isoformat() -%}
+            {%- do log("Starting build to dev schema: "~ target.schema ~ 
+                "\nsetting short start time due to dev target schema: " ~ start_time_settings ~
+                "\noriginal value: " ~ config.get('start_time'), not silence_mode) -%}
         {%- endif -%}
 
         {{ log( "start_time_settings: " ~ start_time_settings, not silence_mode) }}
