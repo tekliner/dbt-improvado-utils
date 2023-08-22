@@ -316,21 +316,12 @@
                                 'unfinished': none,
                                 'live'      : none} %}
 
-        {%- if config.get('production_schema') is defined and config.get('production_schema')|default  -%}         -- check production_schema in input model exists and has a value 
-            {%  set production_schema       = config.get('production_schema') -%}     
-            {{ log("Production schema is taken from launched model: " ~ production_schema, not silence_mode) }}
-        {%- else -%}
-            {%- set main_production_schema = var('main_production_schema','') -%}
-            {%- if main_production_schema !='' -%}                                                                 -- check production_schema in dbt_project.yml exists 
-                {%  set production_schema   = main_production_schema -%}
-                {{ log("Production schema is taken from dbt_project.yml: " ~ production_schema, not silence_mode) }}
-            {%- else -%}
-                {%  set production_schema   = '' -%}
-                {{ log("There is no production schema in input model and dbt_project.yml", not silence_mode) }}
-            {%- endif -%}
-        {%- endif -%}
+        {%  set production_schema           = config.get('production_schema', 
+            default = var('main_production_schema','internal_analytics')) %}
+        
+        {{ log("Production schema: " ~ production_schema, not silence_mode) }}
 
-        {%- if target.schema != production_schema -%}        
+        {%- if target.schema != production_schema -%} 
             {%- set start_time_settings = (modules.datetime.datetime.today().date()- modules.datetime.timedelta(days = dev_days_offset)).isoformat() -%}
             {%- do log("current target: "~ target.schema ~ "\nsetting short start time due to dev target schema: " ~ start_time_settings ~ "\noriginal value: " ~ config.get('start_time'), not silence_mode) -%}
         {%- endif -%}
