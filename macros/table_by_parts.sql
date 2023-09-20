@@ -27,11 +27,13 @@ you should take the left table from that join CTE.  #}
   {%  set parent_model             = config.get( 'parent_model' ) -%}
   {%  set parent_relation          = schema ~'.'~ parent_model %}
   {%  set count_of_parts           = config.get( 'count_of_parts', default = 10 ) -%}
+  {%  set parts_by_column          = config.get( 'parts_by_column', default = 'rowNumberInAllBlocks()' ) -%}
 
   {{ log('Initializing materialization with the following settings:
   \n\t  Count of Parts = ' ~ count_of_parts ~ 
   '\n\t  Parent Model = ' ~ parent_model ~ 
-  '\n\t  Parent Relation = ' ~ parent_relation ~ '\n', info=True) }}
+  '\n\t  Parent Relation = ' ~ parent_relation ~ 
+  '\n\t  Parts by Column = ' ~ parts_by_column ~ '\n', info=True) }}
 
 -- Define relations
 
@@ -56,10 +58,6 @@ you should take the left table from that join CTE.  #}
 
   -- Create empty target relation 
   {{ drop_relation_if_exists(target_relation) }}
-
-  {%  set parts_by_column -%}
-      rowNumberInAllBlocks()
-  {%- endset -%} 
 
   {%- set parent_model_parts_limits = dbt_improvado_utils.mcr_get_parent_model_parts_limits(parent_model, parts_by_column, count_of_parts) -%}
 
