@@ -578,6 +578,9 @@
         -- append output relation
             {%- do sections_arr.append(target_output_relation) -%}
         --
+        -- run post hooks
+            {{ run_hooks(post_hooks, inside_transaction=True) }}
+
     -- return
         {% call noop_statement('main', 'Done') -%} {%- endcall %}
         {% do return ({'relations': sections_arr}) -%}
