@@ -8,7 +8,7 @@
     
     #}right({#
         #}toString({#
-             #}{{ mcr_todatetime_viriable_tz( 
+             #}{{ dbt_improvado_utils.mcr_todatetime_viriable_tz( 
                 datetime_str, 
                 local_time_zone ) }}{#
         #}),{#
