@@ -23,7 +23,7 @@
     {{ run_hooks(pre_hooks, inside_transaction=True) }}
 
     {% set to_drop = [] %}
-    {% do create_temporary_empty_table(tmp_relation, sql) %}
+    {% do dbt_improvado_utils.create_temporary_empty_table(tmp_relation, sql) %}
     {{ to_drop.append(tmp_relation) }}
 
     {% if existing_matview is not none %}
@@ -56,11 +56,11 @@
     {% endif %}
 
     {% if full_rebuild %}
-        {% do materialize_table(target_table, sql) %}
+        {% do dbt_improvado_utils.materialize_table(target_table, sql) %}
     {% endif %}
 
     {% if full_rebuild or create_matview %}
-        {% do materialize_matview(target_matview, target_table, sql) %}
+        {% do dbt_improvado_utils.materialize_matview(target_matview, target_table, sql) %}
 
         {{ run_hooks(post_hooks, inside_transaction=True) }}
 

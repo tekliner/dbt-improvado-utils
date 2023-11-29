@@ -90,18 +90,18 @@
         {{ log('Creating new relation ' + target_relation.name )}}
         -- There is not existing relation, so we can just create
         {% call statement('main') -%}
-            {{ create_materialized_view_as(target_relation, mv_target_relation, sql) }}
+            {{ dbt_improvado_utils.materialize_matview(target_relation, mv_target_relation, sql) }}
         {%- endcall %}
     {% elif existing_relation.can_exchange %}
         -- We can do an atomic exchange, so no need for an intermediate
         {% call statement('main') -%}
-            {{ create_materialized_view_as(backup_relation, mv_target_relation, sql) }}
+            {{ dbt_improvado_utils.materialize_matview(backup_relation, mv_target_relation, sql) }}
         {%- endcall %}
         {% do exchange_tables_atomic(backup_relation, existing_relation) %}
     {% else %}
         -- We have to use an intermediate and rename accordingly
         {% call statement('main') -%}
-            {{ create_materialized_view_as(intermediate_relation, mv_target_relation, sql) }}
+            {{ dbt_improvado_utils.materialize_matview(intermediate_relation, mv_target_relation, sql) }}
         {%- endcall %}
         {{ adapter.rename_relation(existing_relation, backup_relation) }}
         {{ adapter.rename_relation(intermediate_relation, target_relation) }}
