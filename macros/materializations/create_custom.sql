@@ -77,7 +77,7 @@
         {% if ddl_changed %}
             {% if existing_relation.can_exchange %}
                 -- We can do an atomic exchange, so no need for an intermediate
-                {% set build_sql = regex_replace_schema(sql, target_relation, backup_relation) %}
+                {% set build_sql = dbt_improvado_utils.regex_replace_schema(sql, target_relation, backup_relation) %}
                 {% call statement('main') %}
                     {{ build_sql }}
                 {% endcall %}
@@ -85,7 +85,7 @@
 
             {% else %}
                 -- We have to use an intermediate and rename accordingly
-                {% set build_sql = regex_replace_schema(sql, target_relation, intermediate_relation) %}
+                {% set build_sql = dbt_improvado_utils.regex_replace_schema(sql, target_relation, intermediate_relation) %}
                 {% call statement('main') %}
                     {{ build_sql }}
                 {% endcall %}
