@@ -60,9 +60,9 @@
     {% else %}
         {% set re = modules.re %}
         -- Strip whitespace to compare
-        {% set old_sql_stripped = re.sub('\s+', ' ', show_create_table(existing_relation).strip()) %}
+        {% set old_sql_stripped = re.sub('\s+', ' ', dbt_improvado_utils.show_create_table(existing_relation).strip()) %}
 
-        {% set sql_fixed_start = re.sub('(?i)if not exists', '', regex_replace_schema(sql, target_relation, target_relation).strip()) %}
+        {% set sql_fixed_start = re.sub('(?i)if not exists', '', dbt_improvado_utils.regex_replace_schema(sql, target_relation, target_relation).strip()) %}
         {% set sql_fixed_end = re.sub('(?is)\s+as select .*', '', sql_fixed_start) %}
         {% set new_sql_stripped = re.sub('\s+', ' ', sql_fixed_end) %}
 
