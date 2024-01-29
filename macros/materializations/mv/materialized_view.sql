@@ -55,6 +55,8 @@
 
     {% endif %}
 
+    {% do drop_relation_if_exists(tmp_relation) %}
+
     {% if full_rebuild %}
         {% do dbt_improvado_utils.materialize_table(target_table, sql) %}
     {% endif %}
