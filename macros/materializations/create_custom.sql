@@ -22,7 +22,7 @@
 
 -- previous name 'create_custom', now called 'create_custom'
 {% materialization create_custom, adapter='clickhouse' %}
-    {% set target_relation = this.incorporate(type='table', table_engine="Dictionary", drop_type="dictionary") %}
+    {% set target_relation = this.incorporate(type='table') %}
     {% set existing_relation = load_cached_relation(target_relation) %}
 
     {% set intermediate_relation = make_intermediate_relation(target_relation) %}
