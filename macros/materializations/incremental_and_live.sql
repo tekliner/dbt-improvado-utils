@@ -36,21 +36,19 @@
 
     {% macro default__get_sql_for_insert ( sql, input_models_set, input_columns_set, output_column, max_having_right, left_where, right_where, left_having, right_having, debug_mode ) %}
         
-        {% for input_model, input_column in input_models_set|zip(input_columns_set) %}
+        {% set model_sql = namespace(query=sql) %}
 
+        {% for index in range(input_models_set|length) %}
+            {% set input_model = input_models_set[index] %}
+            {% set input_column = input_columns_set[index] %}
             {% set input_relation = schema ~ '.' ~ input_model %}
+            {% set sql_replacement = "(select * from " ~ input_relation ~ " where " ~ input_column ~ " between '" ~ left_where ~ "' and '" ~ right_where ~ "')" %}
+            
+           
+            {% set model_sql.query = (model_sql.query | replace(input_relation, sql_replacement)) %}
 
-            {% set input_relation_with_where_condition %}
-                (   select      *
-                    from        {{input_relation}} 
-                    where       {{input_column}} between '{{left_where}}' and '{{right_where}}')
-            {% endset %}
-
-            {% set sql %}
-               {{ sql | replace( input_relation, input_relation_with_where_condition )}}
-            {% endset %}
-        
         {% endfor %}
+
 
         {% set target_relation_interval_insert %}
             WITH            _sql as ({{ sql }})
@@ -129,29 +127,26 @@
 
     {% macro bigquery__get_sql_for_insert ( sql, input_models_set, input_columns_set, output_column, max_having_right, left_where, right_where, left_having, right_having, debug_mode ) %}
         
-        {% for input_model, input_column in input_models_set|zip(input_columns_set) %}
+        {% set model_sql = namespace(query=sql) %}
 
+        {% for index in range(input_models_set|length) %}
+            {% set input_model = input_models_set[index] %}
+            {% set input_column = input_columns_set[index] %}
             {% set input_relation = schema ~ '.' ~ input_model %}
+            {% set sql_replacement = "(select * from " ~ input_relation ~ " where " ~ input_column ~ " between '" ~ left_where ~ "' and '" ~ right_where ~ "')" %}
+            
+           
+            {% set model_sql.query = (model_sql.query | replace(input_relation, sql_replacement)) %}
 
-            {% set input_relation_with_where_condition %}
-                (   select      *
-                    from        {{input_relation}} 
-                    where       {{input_column}} between '{{left_where}}' and '{{right_where}}')
-            {% endset %}
-
-            {% set sql %}
-               {{ sql | replace( input_relation, input_relation_with_where_condition )}}
-            {% endset %}
-        
         {% endfor %}
 
         {% set target_relation_interval_insert %}
             WITH            _sql as ({{ sql }})
             SELECT          *
             FROM            _sql
-            where          toDateTime({{ output_column }}) > '{{ left_having }}'
-                            and toDateTime({{ output_column }}) <= '{{ right_having }}'                                             
-                            and toDateTime({{ output_column }}) <= '{{ max_having_right }}'
+            where          DATETIME({{ output_column }}) > '{{ left_having }}'
+                            and DATETIME({{ output_column }}) <= '{{ right_having }}'                                             
+                            and DATETIME({{ output_column }}) <= '{{ max_having_right }}'
             {% if debug_mode %} LIMIT 1 {% endif %}
         {% endset %}
 
