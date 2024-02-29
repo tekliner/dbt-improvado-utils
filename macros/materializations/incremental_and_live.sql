@@ -20,10 +20,10 @@
 ---------ADAPTERS--------------
 ---- Default
 
-    {% macro default__insert_as (sql, target_relation, input_relation, input_column, output_column, max_having_right, left_where, right_where, left_having, right_having, debug_mode) %}
+    {% macro default__insert_as (sql, target_relation, input_models_set, input_columns_set, output_column, max_having_right, left_where, right_where, left_having, right_having, debug_mode) %}
         
         {% set inserting_sql = 
-                adapter.dispatch("get_sql_for_insert", macro_namespace="dbt_improvado_utils")( sql, input_relation, input_column, output_column, max_having_right, left_where, right_where, left_having, right_having, debug_mode) %}
+                adapter.dispatch("get_sql_for_insert", macro_namespace="dbt_improvado_utils")( sql, input_models_set, input_columns_set, output_column, max_having_right, left_where, right_where, left_having, right_having, debug_mode) %}
 
         INSERT INTO {{target_relation}} {{inserting_sql}}
 
@@ -34,17 +34,26 @@
         {{ return (target_relation_interval_insert)}}
     {% endmacro %}
 
-    {% macro default__get_sql_for_insert ( sql, input_relation, input_column, output_column, max_having_right, left_where, right_where, left_having, right_having, debug_mode ) %}
+    {% macro default__get_sql_for_insert ( sql, input_models_set, input_columns_set, output_column, max_having_right, left_where, right_where, left_having, right_having, debug_mode ) %}
         
-        {% set input_relation_with_where_condition %}
-            (   select      *
-                from        {{input_relation}} 
-                where       {{input_column}} between '{{left_where}}' and '{{right_where}}')
-        {% endset %}
+        {% for input_model, input_column in input_models_set|zip(input_columns_set) %}
 
+            {% set input_relation = schema ~ '.' ~ input_model %}
+
+            {% set input_relation_with_where_condition %}
+                (   select      *
+                    from        {{input_relation}} 
+                    where       {{input_column}} between '{{left_where}}' and '{{right_where}}')
+            {% endset %}
+
+            {% set sql %}
+               {{ sql | replace( input_relation, input_relation_with_where_condition )}}
+            {% endset %}
+        
+        {% endfor %}
 
         {% set target_relation_interval_insert %}
-            WITH            _sql as ({{ sql | replace( input_relation, input_relation_with_where_condition )}})
+            WITH            _sql as ({{ sql }})
             SELECT          *
             FROM            _sql
             where          toDateTime({{ output_column }}) > '{{ left_having }}'
@@ -104,10 +113,10 @@
 ----
 ---- Bigquery
 
-    {% macro bigquery__insert_as (sql, target_relation, input_relation, input_column, output_column, max_having_right, left_where, right_where, left_having, right_having, debug_mode) %}
+    {% macro bigquery__insert_as (sql, target_relation, input_models_set, input_columns_set, output_column, max_having_right, left_where, right_where, left_having, right_having, debug_mode) %}
         
         {% set inserting_sql = 
-                adapter.dispatch("get_sql_for_insert", macro_namespace="dbt_improvado_utils")( sql, input_relation, input_column, output_column, max_having_right, left_where, right_where, left_having, right_having, debug_mode) %}
+                adapter.dispatch("get_sql_for_insert", macro_namespace="dbt_improvado_utils")( sql, input_models_set, input_column, output_column, max_having_right, left_where, right_where, left_having, right_having, debug_mode) %}
 
         INSERT INTO {{target_relation}} {{inserting_sql}}
 
@@ -118,22 +127,31 @@
         {{ return (target_relation_interval_insert)}}
     {% endmacro %}
 
-    {% macro bigquery__get_sql_for_insert ( sql, input_relation, input_column, output_column, max_having_right, left_where, right_where, left_having, right_having, debug_mode ) %}
+    {% macro bigquery__get_sql_for_insert ( sql, input_models_set, input_columns_set, output_column, max_having_right, left_where, right_where, left_having, right_having, debug_mode ) %}
         
-        {% set input_relation_with_where_condition %}
-            (   select      *
-                from        {{input_relation}} 
-                where       {{input_column}} between '{{left_where}}' and '{{right_where}}')
-        {% endset %}
+        {% for input_model, input_column in input_models_set|zip(input_columns_set) %}
 
+            {% set input_relation = schema ~ '.' ~ input_model %}
+
+            {% set input_relation_with_where_condition %}
+                (   select      *
+                    from        {{input_relation}} 
+                    where       {{input_column}} between '{{left_where}}' and '{{right_where}}')
+            {% endset %}
+
+            {% set sql %}
+               {{ sql | replace( input_relation, input_relation_with_where_condition )}}
+            {% endset %}
+        
+        {% endfor %}
 
         {% set target_relation_interval_insert %}
-            WITH            _sql as ({{ sql | replace( input_relation, input_relation_with_where_condition )}})
+            WITH            _sql as ({{ sql }})
             SELECT          *
             FROM            _sql
-            where          DATETIME({{ output_column }}) >  '{{ left_having }}'
-                            and DATETIME({{ output_column }}) <= '{{ right_having }}'                                             
-                            and DATETIME({{ output_column }}) <= '{{ max_having_right }}'
+            where          toDateTime({{ output_column }}) > '{{ left_having }}'
+                            and toDateTime({{ output_column }}) <= '{{ right_having }}'                                             
+                            and toDateTime({{ output_column }}) <= '{{ max_having_right }}'
             {% if debug_mode %} LIMIT 1 {% endif %}
         {% endset %}
 
@@ -189,10 +207,10 @@
 ----
 ---- Clickhouse
 
-    {% macro clickhouse__insert_as (sql, target_relation, input_relation, input_column, output_column, max_having_right, left_where, right_where, left_having, right_having, debug_mode) %}
+    {% macro clickhouse__insert_as (sql, target_relation, input_models_set, input_columns_set, output_column, max_having_right, left_where, right_where, left_having, right_having, debug_mode) %}
         
         {% set inserting_sql = 
-                adapter.dispatch("get_sql_for_insert", macro_namespace="dbt_improvado_utils")( sql, input_relation, input_column, output_column, max_having_right, left_where, right_where, left_having, right_having, debug_mode) %}
+                adapter.dispatch("get_sql_for_insert", macro_namespace="dbt_improvado_utils")( sql, input_models_set, input_columns_set, output_column, max_having_right, left_where, right_where, left_having, right_having, debug_mode) %}
 
         INSERT INTO {{target_relation}} {{inserting_sql}}
 
@@ -203,17 +221,23 @@
         {{ return (target_relation_interval_insert)}}
     {% endmacro %}
 
-    {% macro clickhouse__get_sql_for_insert ( sql, input_relation, input_column, output_column, max_having_right, left_where, right_where, left_having, right_having, debug_mode ) %}
+    {% macro clickhouse__get_sql_for_insert ( sql, input_models_set, input_columns_set, output_column, max_having_right, left_where, right_where, left_having, right_having, debug_mode ) %}
         
-        {% set input_relation_with_where_condition %}
-            (   select      *
-                from        {{input_relation}} 
-                where       {{input_column}} between '{{left_where}}' and '{{right_where}}')
-        {% endset %}
+        {% set model_sql = namespace(query=sql) %}
 
+        {% for index in range(input_models_set|length) %}
+            {% set input_model = input_models_set[index] %}
+            {% set input_column = input_columns_set[index] %}
+            {% set input_relation = schema ~ '.' ~ input_model %}
+            {% set sql_replacement = "(select * from " ~ input_relation ~ " where " ~ input_column ~ " between '" ~ left_where ~ "' and '" ~ right_where ~ "')" %}
+            
+           
+            {% set model_sql.query = (model_sql.query | replace(input_relation, sql_replacement)) %}
+
+        {% endfor %}
 
         {% set target_relation_interval_insert %}
-            WITH            _sql as ({{ sql | replace( input_relation, input_relation_with_where_condition )}})
+            WITH            _sql as ({{ model_sql.query }})
             SELECT          *
             FROM            _sql
             where          toDateTime({{ output_column }}) > '{{ left_having }}'
@@ -283,30 +307,32 @@
 {% materialization incremental_and_live   %}
 
     -- input data fields
-        {%  set input_model                 = config.get('input_model') -%}
-        {%  set input_relation              = schema ~ '.' ~ input_model %}
-        {%  set input_timestamp_column      = config.get('input_timestamp_column') -%}
-
-        {%  set output_id_column            = config.get('output_id_column') -%}
-        {%  set output_session_end_column   = config.get('output_session_end_column') -%} -- TODO: remove word session
+        {%  set input_models_str                    = config.get('input_models') -%}
+        {%  set input_timestamp_columns_str         = config.get('input_timestamp_columns') -%}
         
-        {%  set time_unit_name              = config.get('time_unit_name') -%}
-        {%  set start_time_settings         = config.get('start_time') -%}
-        {%  set dev_days_offset             = config.get('dev_days_offset', default = 0) -%}
-        {%  set interval_fluctuation        = config.get('interval_fluctuation') -%}
-        {%  set materialized_window         = config.get('materialized_window') -%}
-        {%  set partition_by                = config.get('partition_by') %}
-        {%  set engine                      = config.get('engine') %}
-        {%  set order_by                    = config.get('order_by') %}
+        {%  set input_models_set                    = input_models_str.split(', ') %}
+        {%  set input_columns_set                   = input_timestamp_columns_str.split(', ') %}
 
-        {%  set life_section                = config.get('life_section', default = True) %}
-        {%  set unfinished_section          = config.get('unfinished_section', default = True) %}
-        {%  set unfinished_changes_filter   = config.get('unfinished_changes_filter', default = True) %}
+        {%  set output_id_column                    = config.get('output_id_column') -%}
+        {%  set output_session_end_column           = config.get('output_session_end_column') -%} -- TODO: remove word session
+        
+        {%  set time_unit_name                      = config.get('time_unit_name') -%}
+        {%  set start_time_settings                 = config.get('start_time') -%}
+        {%  set dev_days_offset                     = config.get('dev_days_offset', default = 0) -%}
+        {%  set interval_fluctuation                = config.get('interval_fluctuation') -%}
+        {%  set materialized_window                 = config.get('materialized_window') -%}
+        {%  set partition_by                        = config.get('partition_by') %}
+        {%  set engine                              = config.get('engine') %}
+        {%  set order_by                            = config.get('order_by') %}
 
-        {%  set debug_mode                  = config.get('debug_mode', default = False) %}
-        {%  set silence_mode                = config.get('silence_mode', default = False) %}
+        {%  set life_section                        = config.get('life_section', default = True) %}
+        {%  set unfinished_section                  = config.get('unfinished_section', default = True) %}
+        {%  set unfinished_changes_filter           = config.get('unfinished_changes_filter', default = True) %}
 
-        {%  set production_schema           = config.get('production_schema',
+        {%  set debug_mode                          = config.get('debug_mode', default = False) %}
+        {%  set silence_mode                        = config.get('silence_mode', default = False) %}
+
+        {%  set production_schema                   = config.get('production_schema',
             default = var('main_production_schema','internal_analytics')) %}
 
         {%  set fixed_now                   = modules.datetime.datetime.now().replace( microsecond=0 ) %}
@@ -329,7 +355,9 @@
                 "\noriginal value: " ~ config.get('start_time'), not silence_mode) -%}
         {%- endif -%}
 
-        {{ log( "start_time_settings: " ~ start_time_settings, not silence_mode) }}
+        {{ log( "input_models" ~ input_models_set, not silence_mode) }}
+
+        {{ log( "input_columns" ~ input_columns_set, not silence_mode) }}
         
         {{ log( "Fixed now time: " ~ fixed_now, not silence_mode) }} 
 
@@ -421,8 +449,8 @@
                 {% set target_history_insert_query = 
                         adapter.dispatch("insert_as", macro_namespace="dbt_improvado_utils")(  sql = sql,
                                                         target_relation = target_history_relation,
-                                                        input_relation = input_relation, 
-                                                        input_column = input_timestamp_column, 
+                                                        input_models_set = input_models_set, 
+                                                        input_columns_set = input_columns_set, 
                                                         output_column = output_session_end_column,
                                                         max_having_right = max_history_allowed_timestamp,
                                                         left_where = left_where_condition, 
@@ -486,8 +514,8 @@
                 {% set target_unfinished_insert_query = 
                         adapter.dispatch("insert_as", macro_namespace="dbt_improvado_utils")(  sql = sql,
                                                         target_relation = target_unfinished_relation,
-                                                        input_relation = input_relation, 
-                                                        input_column = input_timestamp_column, 
+                                                        input_models_set = input_models_set, 
+                                                        input_columns_set = input_columns_set, 
                                                         output_column = output_session_end_column,
                                                         max_having_right = right_unfinished_pre_where_timestamp,
                                                         left_where = left_unfinished_pre_where_timestamp, 
@@ -525,8 +553,8 @@
 
                 {% set target_live_create_query = 
                         adapter.dispatch("get_sql_for_insert", macro_namespace="dbt_improvado_utils")( sql = sql, 
-                                                                input_relation = input_relation, 
-                                                                input_column = input_timestamp_column, 
+                                                                input_models_set = input_models_set, 
+                                                                input_columns_set = input_columns_set, 
                                                                 output_column = output_session_end_column, 
                                                                 max_having_right = right_live_pre_where_timestamp,
                                                                 left_where = left_live_pre_where_timestamp, 
