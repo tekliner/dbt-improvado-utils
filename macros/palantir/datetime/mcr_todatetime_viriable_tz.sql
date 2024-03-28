@@ -22,7 +22,7 @@
     {% if execute %}
         multiIf( {% for system_time_zone in time_zones_list.rows %}{#
             #}{{ local_time_zone }}='{{system_time_zone["time_zone"]}}',{# -- if variable equels to constant
-            #}toDateTime({{ datetime_in_local_time_zone_str }},'{{system_time_zone["time_zone"]}}'),{# -- than change variable to constant #}
+            #}toDateTimeOrZero({{ datetime_in_local_time_zone_str }},'{{system_time_zone["time_zone"]}}'),{# -- than change variable to constant #}
             {% endfor %}
         NULL
         )
