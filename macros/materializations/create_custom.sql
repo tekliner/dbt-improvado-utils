@@ -60,12 +60,31 @@
     {% else %}
         {% set re = modules.re %}
         -- Strip whitespace to compare
-        {% set old_sql_stripped = re.sub('\s+', ' ', dbt_improvado_utils.show_create_table(existing_relation).strip()) %}
+        
+        {% set old_sql = dbt_improvado_utils.show_create_table(existing_relation) %}
+        {% set new_sql = dbt_improvado_utils.regex_replace_schema(sql, target_relation, target_relation) %}
+        
+        -- Remove 'CREATE relation IF' and 'AS SELECT' clause,comments since DDL doesn't store them
+        {% set new_sql_create_clause_removed = re.sub('(?i)if not exists', '', new_sql) %}
+        {% set new_sql_as_select_from_removed = re.sub('(?is)\s+as select .*', '', new_sql_create_clause_removed) %}
+        {% set new_sql_comments_removed = re.sub('(?im)((--|{#)+.+(#}|$))', '', new_sql_as_select_from_removed) %}
 
-        {% set sql_fixed_start = re.sub('(?i)if not exists', '', dbt_improvado_utils.regex_replace_schema(sql, target_relation, target_relation).strip()) %}
-        {% set sql_fixed_end = re.sub('(?is)\s+as select .*', '', sql_fixed_start) %}
-        {% set new_sql_stripped = re.sub('\s+', ' ', sql_fixed_end) %}
+        --Removing credentials
+        {% set user_creds_pattern = "(?i)user\s?'([^']+)'"%}
+        {% set password_creds_pattern = "(?i)password\s?'([^']+)'"%}
 
+        {% set old_sql_half_creds_clean = re.sub(user_creds_pattern, "'DB_USER'", old_sql) %}
+        {% set old_sql_clean = re.sub(password_creds_pattern, "'DB_PASSWORD'", old_sql_half_creds_clean) %}
+        
+        {% set new_sql_half_creds_clean = re.sub(user_creds_pattern, "'DB_USER'", new_sql_comments_removed) %}
+        {% set new_sql_clean = re.sub(password_creds_pattern, "'DB_PASSWORD'", new_sql_half_creds_clean) %}
+
+         -- Strip whitespace to compare
+        
+        {% set old_sql_stripped = re.sub('\s+', ' ', old_sql_clean.strip()) %}
+        {% set new_sql_stripped = re.sub('\s+', ' ', new_sql_clean.strip()) %}
+        {% do log("OLD: " ~ old_sql_stripped, True) %}
+        {% do log("NEW: " ~ new_sql_stripped, True) %}
         {% if old_sql_stripped != new_sql_stripped  %}
             {% do log("DDL changed for " ~ existing_relation, True) %}
             {% do log("OLD: " ~ old_sql_stripped, True) %}
