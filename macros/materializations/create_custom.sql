@@ -66,7 +66,7 @@
         
         -- Remove 'CREATE relation IF' and 'AS SELECT' clause,comments since DDL doesn't store them
         {% set new_sql_create_clause_removed = re.sub('(?i)if not exists', '', new_sql) %}
-        {% set new_sql_as_select_from_removed = re.sub('(?is)\s+as select .*', '', new_sql_create_clause_removed) %}
+        {% set new_sql_as_select_from_removed = re.sub('(?is)(?:empty as|as select) .*', '', new_sql_create_clause_removed) %}
         {% set new_sql_comments_removed = re.sub('(?im)((--|{#)+.+(#}|$))', '', new_sql_as_select_from_removed) %}
 
         --Removing credentials
@@ -83,8 +83,7 @@
         
         {% set old_sql_stripped = re.sub('\s+', ' ', old_sql_clean.strip()) %}
         {% set new_sql_stripped = re.sub('\s+', ' ', new_sql_clean.strip()) %}
-        {% do log("OLD: " ~ old_sql_stripped, True) %}
-        {% do log("NEW: " ~ new_sql_stripped, True) %}
+
         {% if old_sql_stripped != new_sql_stripped  %}
             {% do log("DDL changed for " ~ existing_relation, True) %}
             {% do log("OLD: " ~ old_sql_stripped, True) %}
