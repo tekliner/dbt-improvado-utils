@@ -59,17 +59,35 @@
 
     {% else %}
         {% set re = modules.re %}
-        -- Strip whitespace to compare
-        {% set old_sql_stripped = re.sub('\s+', ' ', dbt_improvado_utils.show_create_table(existing_relation).strip()) %}
 
-        {% set sql_fixed_start = re.sub('(?i)if not exists', '', dbt_improvado_utils.regex_replace_schema(sql, target_relation, target_relation).strip()) %}
-        {% set sql_fixed_end = re.sub('(?is)\s+as select .*', '', sql_fixed_start) %}
-        {% set new_sql_stripped = re.sub('\s+', ' ', sql_fixed_end) %}
+        {% set old_sql_raw = dbt_improvado_utils.show_create_table(existing_relation) %}
+        {% set new_sql_raw = dbt_improvado_utils.regex_replace_schema(sql, target_relation, target_relation) %}
+        
+        -- old sql clean
+        {% set old_sql_re_user = re.sub("(?is)user\\s'([^']+)'", 'DB_USER', old_sql_raw) %}
+        {% set old_sql_re_password = re.sub("(?is)password\s'([^']+)'", 'DB_PASSWORD', old_sql_re_user) %}
+        {% set old_sql_stripped = re.sub('\s+', ' ', old_sql_re_password.strip()) %}
+        
+        {% set old_sql_clean = old_sql_stripped %}
 
-        {% if old_sql_stripped != new_sql_stripped  %}
+
+        -- new sql clean
+        {% set new_sql_comment = re.sub('(?m)--\s?.+$', '', new_sql_raw) %}
+        {% set new_sql_create_statement = re.sub('(?i)if not exists', '', new_sql_comment) %}
+        {% set new_sql_user = re.sub("(?is)user\s'([^']+)'", 'DB_USER', new_sql_create_statement) %}
+        {% set new_sql_password = re.sub("(?is)password\s'([^']+)'", 'DB_PASSWORD', new_sql_user) %}
+        {% set new_sql_stripped =  new_sql_password.strip() %}
+        {% set new_sql_whitespace = re.sub('\s+', ' ',new_sql_stripped) %}
+        {% set new_sql_as_select_statement = re.sub('(?is)\s?(empty)?\s?as select .*', '', new_sql_whitespace) %}
+        
+
+        {% set new_sql_clean = new_sql_as_select_statement %}
+
+
+        {% if old_sql_clean != new_sql_clean  %}
             {% do log("DDL changed for " ~ existing_relation, True) %}
-            {% do log("OLD: " ~ old_sql_stripped, True) %}
-            {% do log("NEW: " ~ new_sql_stripped, True) %}
+            {% do log("OLD: " ~ old_sql_clean, True) %}
+            {% do log("NEW: " ~ new_sql_clean, True) %}
 
             {% set ddl_changed = True %}
         {% endif %}
