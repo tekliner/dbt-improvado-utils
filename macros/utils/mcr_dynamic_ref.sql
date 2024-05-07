@@ -1,8 +1,8 @@
-{%- macro mcr_dynamic_ref(relation) -%}
+{%- macro mcr_dynamic_ref(relation, percent=0.1) -%}
     {% set query_result = run_query('select count() from ' ~ relation) %}
 
     {%- if execute -%}
-        {%- set dynamic_limit = ((query_result[0][0] | float) * 0.1) | int -%}
+        {%- set dynamic_limit = ((query_result[0][0] | float) * percent) | int -%}
     {%- endif -%}
 
     {%- if target.schema != 'internal_analytics' and model.config.materialized not in ('view','seed') -%}
