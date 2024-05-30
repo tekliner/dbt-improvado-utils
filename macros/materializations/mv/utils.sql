@@ -10,7 +10,7 @@
     {% endset %}
 
     {% call statement('tmp_relation_table') -%}
-        {{ clickhouse__create_table_as(False, relation, wrapped_sql)  }}
+        {{ clickhouse__create_table_as(False, relation, wrapped_sql) }}
     {%- endcall %}
 
     {{ return(relation) }}
