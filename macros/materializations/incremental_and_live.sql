@@ -223,7 +223,7 @@
         {% for index in range(input_models_set|length) %}
             {% set input_model = input_models_set[index] %}
             {% set input_column = input_columns_set[index] %}
-            {% set input_relation = schema ~ '.' ~ input_model %}
+            {% set input_relation = '`' ~ schema ~ '`' ~ '.' ~ '`' ~ input_model ~ '`' %}
             {% set sql_replacement = "(select * from " ~ input_relation ~ " where " ~ input_column ~ " between '" ~ left_where ~ "' and '" ~ right_where ~ "')" %}
             
            
