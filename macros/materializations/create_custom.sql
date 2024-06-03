@@ -32,16 +32,16 @@
 
     {% set existing_intermediate_relation = load_cached_relation(intermediate_relation) %}
     {% if existing_intermediate_relation %}
-        {% do drop_relation_if_exists(existing_intermediate_relation) %}
+        {% do dbt_improvado_utils.mcr_drop_relation_if_exists(existing_intermediate_relation) %}
     {% else %}
-        {% do drop_relation_if_exists(intermediate_relation) %}
+        {% do dbt_improvado_utils.mcr_drop_relation_if_exists(intermediate_relation) %}
     {% endif %}
 
     {% set existing_backup_relation = load_cached_relation(backup_relation) %}
     {% if existing_backup_relation %}
-        {% do drop_relation_if_exists(existing_backup_relation) %}
+        {% do dbt_improvado_utils.mcr_drop_relation_if_exists(existing_backup_relation) %}
     {% else %}
-        {% do drop_relation_if_exists(backup_relation) %}
+        {% do dbt_improvado_utils.mcr_drop_relation_if_exists(backup_relation) %}
     {% endif %}
 
     {{ run_hooks(pre_hooks, inside_transaction=False) }}
