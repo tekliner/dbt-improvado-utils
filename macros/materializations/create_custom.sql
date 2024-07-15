@@ -121,17 +121,17 @@
 
     {% endif %}
 
-    {{ run_hooks(post_hooks, inside_transaction=True) }}
-    {% do persist_docs(target_relation, model) %}
-    -- `COMMIT` happens here
-    {% do adapter.commit() %}
-
     {% for rel in to_drop %}
         {% set rel_with_type = load_cached_relation(rel) %}
         {% if rel_with_type %}
             adapter.drop_relation(rel_with_type)
         {% endif %}
     {% endfor %}
+
+    {{ run_hooks(post_hooks, inside_transaction=True) }}
+    {% do persist_docs(target_relation, model) %}
+    -- `COMMIT` happens here
+    {% do adapter.commit() %}
 
     {{ run_hooks(post_hooks, inside_transaction=False) }}
 
