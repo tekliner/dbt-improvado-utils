@@ -93,23 +93,32 @@
         {% endif %}
 
         {% if ddl_changed %}
+            {% do log("dll changed block", True) %}
             {% if existing_relation.can_exchange %}
+                {% do log("exchange block", True) %}
                 -- We can do an atomic exchange, so no need for an intermediate
                 {% set build_sql = dbt_improvado_utils.regex_replace_schema(sql, target_relation, backup_relation) %}
+                {% do log("call statement", True) %}
                 {% call statement('main') %}
                     {{ build_sql }}
                 {% endcall %}
+                {% do log("end call statement, start exchanging", True) %}
                 {% do exchange_tables_atomic(backup_relation, existing_relation) %}
+                {% do log("end exchanging", True) %}
 
             {% else %}
+                {% do log("rename block", True) %}
                 -- We have to use an intermediate and rename accordingly
                 {% set build_sql = dbt_improvado_utils.regex_replace_schema(sql, target_relation, intermediate_relation) %}
+                {% do log("call statement", True) %}
                 {% call statement('main') %}
                     {{ build_sql }}
                 {% endcall %}
-
+                {% do log("end call statement, start renaming", True) %}
                 {{ adapter.rename_relation(existing_relation, backup_relation) }}
+                {% do log("existing>backup", True) %}
                 {{ adapter.rename_relation(intermediate_relation, target_relation) }}
+                {% do log("end renaming", True) %}
 
                 {{ to_drop.append(intermediate_relation) }}
             {% endif %}
@@ -120,19 +129,25 @@
         {% endif %}
 
     {% endif %}
-
+    {% do log("start dropping relations", True) %}
     {% for rel in to_drop %}
+        {% do log("dropping " ~ rel, True) %}
         {% set rel_with_type = load_cached_relation(rel) %}
+        {% do log("set rel_with_type " ~ rel_with_type, True) %}
         {% if rel_with_type %}
             adapter.drop_relation(rel_with_type)
+            {% do log("dropped " ~ rel_with_type, True) %}
         {% endif %}
     {% endfor %}
-
+    {% do log("run hooks inside_transaction", True) %}
     {{ run_hooks(post_hooks, inside_transaction=True) }}
+    {% do log("persist_docs", True) %}
     {% do persist_docs(target_relation, model) %}
     -- `COMMIT` happens here
+    {% do log("commiting" ~ rel, True) %}
     {% do adapter.commit() %}
-
+    {% do log("end commiting" ~ rel, True) %}
+    {% do log("run hooks !inside_transaction", True) %}
     {{ run_hooks(post_hooks, inside_transaction=False) }}
 
     {% if do_nothing %}
@@ -140,7 +155,7 @@
         {% do log("ddl unchanged, skipping " ~ target_relation, True) %}
         {{ store_result('main', 'SKIP') }}
     {% endif %}
-
+    {% do log("return relations", True) %}
     {{ return({'relations': [target_relation]}) }}
 
 {% endmaterialization %}
