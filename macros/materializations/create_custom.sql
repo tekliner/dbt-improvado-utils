@@ -108,6 +108,8 @@
                     {{ build_sql }}
                 {% endcall %}
 
+                -- We need to drop the backup relation before we can use its name and to avoid name collisions
+                {{ adapter.drop_relation(backup_relation) }}
                 {{ adapter.rename_relation(existing_relation, backup_relation) }}
                 {{ adapter.rename_relation(intermediate_relation, target_relation) }}
 
