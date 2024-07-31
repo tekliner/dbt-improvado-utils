@@ -234,7 +234,6 @@
             {% set model_sql.query = (model_sql.query | replace(input_relation, current_schema_replacement)) %}
             {# when --defer is used current relation will be `internal_analytics.model` and previous replacement won't work #}
             {% set model_sql.query = (model_sql.query | replace(ia_relation, ia_schema_replacement)) %}
-            {{ print('after' ~ model_sql.query) }}
         {% endfor %}
 
         {% set target_relation_interval_insert %}
