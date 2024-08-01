@@ -223,12 +223,17 @@
         {% for index in range(input_models_set|length) %}
             {% set input_model = input_models_set[index] %}
             {% set input_column = input_columns_set[index] %}
-            {% set input_relation = '`' ~ schema ~ '`' ~ '.' ~ '`' ~ input_model ~ '`' %}
-            {% set sql_replacement = "(select * from " ~ input_relation ~ " where " ~ input_column ~ " between '" ~ left_where ~ "' and '" ~ right_where ~ "')" %}
-            
-           
-            {% set model_sql.query = (model_sql.query | replace(input_relation, sql_replacement)) %}
 
+            {% set input_relation = '`{}`.`{}`'.format(schema, input_model) %}
+            {% set ia_relation = '`internal_analytics`.`{}`'.format(input_model) %}
+            {% set sql_replacement_template = "(select * from {} where {} between '{}' and '{}')" %}
+
+            {% set current_schema_replacement = sql_replacement_template.format(input_relation, input_column, left_where, right_where) %}
+            {% set ia_schema_replacement = sql_replacement_template.format(ia_relation, input_column, left_where, right_where) %}
+
+            {% set model_sql.query = (model_sql.query | replace(input_relation, current_schema_replacement)) %}
+            {# when --defer is used current relation will be `internal_analytics.model` and previous replacement won't work #}
+            {% set model_sql.query = (model_sql.query | replace(ia_relation, ia_schema_replacement)) %}
         {% endfor %}
 
         {% set target_relation_interval_insert %}
