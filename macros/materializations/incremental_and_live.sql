@@ -232,8 +232,11 @@
             {% set ia_schema_replacement = sql_replacement_template.format(ia_relation, input_column, left_where, right_where) %}
 
             {% set model_sql.query = (model_sql.query | replace(input_relation, current_schema_replacement)) %}
-            {# when --defer is used current relation will be `internal_analytics.model` and previous replacement won't work #}
-            {% set model_sql.query = (model_sql.query | replace(ia_relation, ia_schema_replacement)) %}
+            {# when --defer is used on staging/dev schema current relation will be `internal_analytics`.`model` and "current_schema_replacement" won't work #}
+            {# but when deploying on prod we need to check if relations aren't the same to prevent double replacement and subqueries #}
+            {% if input_relation != ia_relation %}
+                {% set model_sql.query = (model_sql.query | replace(ia_relation, ia_schema_replacement)) %}
+            {% endif %}
         {% endfor %}
 
         {% set target_relation_interval_insert %}
