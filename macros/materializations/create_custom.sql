@@ -7,7 +7,7 @@
         {% do exceptions.raise_compiler_error(raw_schema ~ ' table not found in raw sql for replace') %}
     {% endif %}
 
--- replacing model name in "create" statement and `schema`.`model_name` in "selest as"  statement to schema.model_name
+-- replacing model name in "create" statement and `schema`.`model_name` in "selest as" statement to schema.model_name
     {% set header_replacement = raw_sql.replace(match.group(), target_relation.schema + '.' + target_relation.identifier) %}
     {% set body_replacement = re.sub('(?:`)(\w+)(?:`\.`)(\w+)(?:`)', '\\1' + '.' + '\\2', header_replacement) %}
 
