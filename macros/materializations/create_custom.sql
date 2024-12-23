@@ -126,7 +126,7 @@
     {% for rel in to_drop %}
         {% set rel_with_type = load_cached_relation(rel) %}
         {% if rel_with_type %}
-            adapter.drop_relation(rel_with_type)
+            {{ adapter.drop_relation(rel_with_type) }}
         {% endif %}
     {% endfor %}
 
