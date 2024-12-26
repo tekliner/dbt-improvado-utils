@@ -126,7 +126,7 @@
     {% for rel in to_drop %}
         {% set rel_with_type = load_cached_relation(rel) %}
         {% if rel_with_type %}
-            {{ adapter.drop_relation(rel_with_type) }}
+            {% do dbt_improvado_utils.mcr_drop_relation_if_exists(rel_with_type) %}
         {% endif %}
     {% endfor %}
 
