@@ -2,12 +2,12 @@
     {% set re = modules.re %}
 
     {% set relation_pattern = base_relation.identifier %}
-    {% set match = re.findall('\s' ~ relation_pattern ~ '\s', raw_sql) %}
+    {% set match = re.search('\s' ~ relation_pattern ~ '\s', raw_sql) %}
     {% if not match %}
         {% do exceptions.raise_compiler_error(raw_schema ~ ' table not found in raw sql for replace') %}
     {% endif %}
 
-    {% set new_sql = raw_sql.replace(match[0],  ' ' ~ target_relation.schema + '.' + target_relation.identifier ~ ' ') %}
+    {% set new_sql = raw_sql.replace(match.group(),  ' ' ~ target_relation.schema + '.' + target_relation.identifier ~ ' ') %}
     {% do return(new_sql) %}
 {% endmacro %}
 
