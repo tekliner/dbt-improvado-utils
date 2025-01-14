@@ -2,12 +2,12 @@
     {% set re = modules.re %}
 
     {% set relation_pattern = base_relation.identifier %}
-    {% set match = re.search(relation_pattern, raw_sql) %}
+    {% set match = re.search('\s' ~ relation_pattern ~ '\s', raw_sql) %}
     {% if not match %}
         {% do exceptions.raise_compiler_error(raw_schema ~ ' table not found in raw sql for replace') %}
     {% endif %}
 
-    {% set new_sql = raw_sql.replace(match.group(), target_relation.schema + '.' + target_relation.identifier) %}
+    {% set new_sql = raw_sql.replace(match.group(),  ' ' ~ target_relation.schema + '.' + target_relation.identifier ~ ' ') %}
     {% do return(new_sql) %}
 {% endmacro %}
 
@@ -60,10 +60,10 @@
     {% else %}
         {% set re = modules.re %}
         -- Strip whitespace to compare
-        
+
         {% set old_sql = dbt_improvado_utils.show_create_table(existing_relation) %}
         {% set new_sql = dbt_improvado_utils.regex_replace_schema(sql, target_relation, target_relation) %}
-        
+
         -- Remove 'CREATE relation IF' and 'AS SELECT' clause,comments since DDL doesn't store them
         {% set new_sql_create_clause_removed = re.sub('(?i)if not exists', '', new_sql) %}
         {% set new_sql_as_select_from_removed = re.sub('(?is)(?:empty as|as select) .*', '', new_sql_create_clause_removed) %}
