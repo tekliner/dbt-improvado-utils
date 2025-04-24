@@ -1,7 +1,7 @@
 {%- materialization microbatch -%}
 -- base settings -------------------------------------------------------------------------------------------------------
-    {%- set dt = modules.datetime -%}
-    {%- set re = modules.re -%}
+    {%- set dt                                  = modules.datetime -%}
+    {%- set re                                  = modules.re -%}
     {%- set full_refresh                        = flags.FULL_REFRESH -%}
     {%- set target_schema                       = target.schema -%}
     {%- set production_schema                   = config.get('production_schema',
