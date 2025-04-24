@@ -12,7 +12,7 @@
                                                                    "table": "table_name"}.
 
             primary_key(string, required):          Comma-separated list of columns to use as primary key.
-                                                    Input format: 'column1, column2, column3'
+                                                    Input format: 'column1, column2, ...'
 
             columns_to_include(list, optional):     List of columns to include in the dictionary.
                                                     Defaults to "*". When "*" is used, "columns_to_exclude" can be used.
