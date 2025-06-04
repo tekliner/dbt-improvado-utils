@@ -2,6 +2,7 @@
 -- base settings -------------------------------------------------------------------------------------------------------
     {%- set dt                                  = modules.datetime -%}
     {%- set re                                  = modules.re -%}
+    {%- set diu                                 = dbt_improvado_utils -%}
     {%- set full_refresh                        = flags.FULL_REFRESH -%}
     {%- set target_schema                       = target.schema -%}
     {%- set production_schema                   = config.get('production_schema',
@@ -44,7 +45,7 @@
 -- logic ---------------------------------------------------------------------------------------------------------------
     {%- if not microbatch_settings -%}
         {%- do exceptions.raise_compiler_error(
-                    log_colored(
+                    diu.log_colored(
                         'No microbatch settings found\n' ~
                         'Please add microbatch settings to the model input section', silence_mode, color='red')) -%}
     {%- endif -%}
@@ -56,7 +57,7 @@
         {%- do input_lookback_windows_list.append(setting[1] | int) -%}
     {%- endfor -%}
 
-    {{- log_colored(
+    {{- diu.log_colored(
             'Input models:\n\t' ~ input_models_list | join('\n\t') ~
             '\nInput columns:\n\t' ~ input_columns_list | join('\n\t') ~
             '\nInput lookback windows:\n\t' ~ input_lookback_windows_list | join('\n\t') ~
@@ -66,13 +67,13 @@
     {%- set sql = re.sub('\s*--\s*microbatch:\s*\w+,\s*\d+', '', sql) -%}
 
     {%- if target_schema == production_schema -%}
-        {{- log_colored('Starting to build to production schema: ' ~ target_schema, silence_mode) -}}
+        {{- diu.log_colored('Starting to build to production schema: ' ~ target_schema, silence_mode) -}}
 
     {%- else -%}
         {%- set materialization_start_date =
                     dt.datetime.combine(dt.datetime.today() - dt.timedelta(days=dev_days_offset), dt.time.min) -%}
 
-        {{- log_colored(
+        {{- diu.log_colored(
                 'Starting to build to dev schema:\n\t' ~ target_schema ~
                 '\nDev schema materialization start date:\n\t' ~ materialization_start_date ~
                 '\nOriginal materialization start date:\n\t' ~ config.get('materialization_start_date'), silence_mode) -}}
@@ -80,26 +81,26 @@
 
 -- checking columns consistency(columns names and types comparison)
     {%- set is_schema_changed =
-                check_schema_changes(
+                diu.check_schema_changes(
                     database=none,
                     schema=target_schema,
                     identifier=this.identifier,
                     type='table',
-                    sql=get_table_structure(sql, is_contract_enforced),
+                    sql=diu.get_table_structure(sql, is_contract_enforced),
                     debug_mode=debug_mode,
                     silence_mode=silence_mode) -%}
 
     {%- if is_schema_changed -%}
         {%- if on_schema_change == 'fail' and not full_refresh -%}
             {%- do exceptions.raise_compiler_error(
-                    log_colored(
+                    diu.log_colored(
                         'Schema change detected. Materialization will be stopped\n' ~
                         'Please revise the schema changes or set "on_schema_change" to "full_refresh"\n' ~
                         'If you want to force materialization - run with "full-refresh" flag', silence_mode, color='red')) -%}
 
         {%- elif on_schema_change == 'full_refresh' -%}
             {%- set full_refresh = true -%}
-            {{- log_colored(
+            {{- diu.log_colored(
                     'Full refresh will be done since "on_schema_change" is set to "full_refresh"', silence_mode, color='red') -}}
 
         {%- endif -%}
@@ -107,12 +108,12 @@
 
 -- creating target relation
     {%- set target_relation_exists, target_relation =
-                get_or_create_dataset(
+                diu.get_or_create_dataset(
                     database=none,
                     schema=target_schema,
                     identifier=this.identifier,
                     type='table',
-                    sql=get_table_structure(sql, is_contract_enforced),
+                    sql=diu.get_table_structure(sql, is_contract_enforced),
                     debug_mode=debug_mode,
                     silence_mode=silence_mode) -%}
 
@@ -122,21 +123,21 @@
     {%- if target_relation_exists and not full_refresh -%}
     -- getting max datetime from target relation
         {%- set target_relation_max_datetime =
-                    get_max_datetime(target_relation, output_datetime_column) -%}
+                    diu.get_max_datetime(target_relation, output_datetime_column) -%}
 
         {%- set last_record_datetime =
                     [target_relation_max_datetime, materialization_start_date] | max -%}
 
-        {%- set start_time = last_record_datetime - get_unit_interval(value=overwrite_size, unit=time_unit_name) -%}
+        {%- set start_time = last_record_datetime - diu.get_unit_interval(value=overwrite_size, unit=time_unit_name) -%}
 
-        {{- log_colored(
+        {{- diu.log_colored(
                 'Target relation exists' ~
                 '\nLast record datetime:\n\t' ~ last_record_datetime ~
                 '\nLast record datetime with overwrite size:\n\t' ~ start_time, debug_mode) -}}
 
     {%- else -%}
         {%- set start_time = materialization_start_date -%}
-        {{- log_colored(
+        {{- diu.log_colored(
                 'Target relation doesn\'t exist' ~
                 '\nDefault datetime:\n\t' ~ start_time, debug_mode) -}}
 
@@ -144,14 +145,14 @@
 
 -- interval counts calculation TODO what value use instead of input_lookback_windows_list[0] if there are several lookback windows?
     {%- set interval_range =
-                get_unit_datediff(
+                diu.get_unit_datediff(
                     startdate=start_time,
                     enddate=fixed_now,
                     unit=time_unit_name) - input_lookback_windows_list[0] -%}
 
-    {{- log_colored('Calculating interval parts', silence_mode) -}}
+    {{- diu.log_colored('Calculating interval parts', silence_mode) -}}
     {%- set parts_count = [((interval_range / batch_size + 1.5) | round | int), 2] | max -%}
-    {{- log_colored('Interval parts count:\n\t' ~ parts_count, silence_mode) -}}
+    {{- diu.log_colored('Interval parts count:\n\t' ~ parts_count, silence_mode) -}}
 
 -- temporary table creation
     {%- set tmp_relation_exists, tmp_relation =
@@ -164,12 +165,12 @@
     {%- do drop_relation(tmp_relation) -%}
     {%- do create_table_as(false, tmp_relation.identifier, sql) -%}
 
-    {%- set partition_id = get_partition_id(start_time, partition_by_format) -%}
+    {%- set partition_id = diu.get_partition_id(start_time, partition_by_format) -%}
 
     {%- if not full_refresh -%}
-        {{- log_colored(
+        {{- diu.log_colored(
                 'Copying partition "' ~ partition_id ~ '" from ' ~ target_relation ~ ' to ' ~ tmp_relation, silence_mode) -}}
-        {%- do copy_partition(target_relation, tmp_relation, partition_id) -%}
+        {%- do diu.copy_partition(target_relation, tmp_relation, partition_id) -%}
 
     -- deleting data to be overwritten from tmp relation
         {%- do run_query(
@@ -181,7 +182,7 @@
     {%- for i in range(parts_count) -%}
     -- inserting intervals list calculation
         {%- set where_conditions, having_conditions =
-                    get_intervals_list(
+                    diu.get_intervals_list(
                         interval_offset=i * batch_size,
                         time_unit_name=time_unit_name,
                         start_time=start_time,
@@ -190,7 +191,7 @@
 
     -- inserting intervals list calculation
         {%- set insert_query =
-                    get_insert_query(
+                    diu.get_insert_query(
                         sql=sql,
                         target_relation=tmp_relation,
                         input_models_list=input_models_list,
@@ -202,12 +203,12 @@
 
         {%- if execute -%}
             {%- if loop.first -%}
-                {{- log_colored('Inserting into: ' ~ tmp_relation, silence_mode) -}}
+                {{- diu.log_colored('Inserting into: ' ~ tmp_relation, silence_mode) -}}
             {%- endif -%}
 
-        {{- log_colored(insert_query[250:1000] ~ '\n\n...\n\n' ~ insert_query[-200:], debug_mode) -}}
+        {{- diu.log_colored(insert_query[250:1000] ~ '\n\n...\n\n' ~ insert_query[-200:], debug_mode) -}}
 
-        {{- log_colored(
+        {{- diu.log_colored(
             'Inserting batch: ' ~ (i + 1) ~ ' out of ' ~ parts_count ~
             '\nDate range: from ' ~  having_conditions[0] ~ ' to ' ~  having_conditions[1], silence_mode) -}}
 
@@ -221,12 +222,12 @@
 
     {%- if full_refresh -%}
     -- exchanging tmp table and target table
-        {{- log_colored('Exchanging ' ~ tmp_relation ~ ' with ' ~ target_relation, silence_mode) -}}
-        {{- exchange_tables(tmp_relation, target_relation) -}}
+        {{- diu.log_colored('Exchanging ' ~ tmp_relation ~ ' with ' ~ target_relation, silence_mode) -}}
+        {{- diu.exchange_tables(tmp_relation, target_relation) -}}
     {%- else -%}
     -- replacing partitions
-        {{- log_colored('Replacing partitions from ' ~ tmp_relation ~ ' to ' ~ target_relation, silence_mode) -}}
-        {{- insert_overwrite_partitions(target_relation, tmp_relation) -}}
+        {{- diu.log_colored('Replacing partitions from ' ~ tmp_relation ~ ' to ' ~ target_relation, silence_mode) -}}
+        {{- diu.insert_overwrite_partitions(target_relation, tmp_relation) -}}
     {%- endif -%}
 -- dropping tmp table after replacing or exchanging
     {%- do adapter.drop_relation(tmp_relation) -%}
@@ -275,6 +276,8 @@
         True if the existing table is not consistent with the query being executed
 #}
 -- namespace to allow carrying a value from within a loop body to an outer scope
+    {%- set diu = dbt_improvado_utils -%}
+
     {%- set is_schema_changed = namespace(value=false) -%}
 
 -- get relation to check its existance
@@ -282,10 +285,10 @@
             adapter.get_relation(database=database, schema=schema, identifier=identifier) -%}
 
     {%- if relation and execute -%}
-        {{- log_colored('Checking existing table columns names and types consistency', debug_mode) -}}
+        {{- diu.log_colored('Checking existing table columns names and types consistency', debug_mode) -}}
 
         {%- set check_relation_exists, check_relation =
-                    get_or_create_dataset(
+                    diu.get_or_create_dataset(
                         database=database,
                         schema=schema,
                         identifier=identifier ~ '__consistent_tmp',
@@ -304,11 +307,11 @@
     -- columns number comparison
         {%- if (columns_old | length) != (columns_new | length) -%}
             {%- set is_schema_changed.value = true -%}
-            {{- log_colored(
+            {{- diu.log_colored(
                     'Number of columns doesn\'t match', silence_mode, color='red') -}}
 
         {%- else -%}
-            {{- log_colored(
+            {{- diu.log_colored(
                     'Number of columns match\nChecking for name and type consistency', silence_mode) -}}
 
             {%- for i in range(columns_new | length) -%}
@@ -317,7 +320,7 @@
 
                 {%- if column_old.data_type != column_new.data_type or column_old.name != column_new.name -%} 
                     {%- set is_schema_changed.value = true -%}
-                    {{- log_colored(
+                    {{- diu.log_colored(
                             'Column name/type mismatch:' ~
                             '\n\told: ' ~ column_old.name ~ ' ' ~ column_old.data_type ~
                             '\n\tnew: ' ~ column_new.name ~ ' ' ~ column_new.data_type, silence_mode, color='red') -}}
@@ -325,7 +328,7 @@
             {%- endfor -%}
         {%- endif -%}
 
-        {{- log_colored(
+        {{- diu.log_colored(
                 'Checking for name and type consistency is done',
                 silence_mode,
                 color='red' if is_schema_changed.value else '') -}}
@@ -352,7 +355,9 @@
             relation_exists(bool):      If the relation exists
             Relation_obj(api.Relation): The relation object
 #}
-    {{- log_colored('Checking if relation exists:\n\t' ~ identifier, debug_mode) -}}
+    {%- set diu = dbt_improvado_utils -%}
+
+    {{- diu.log_colored('Checking if relation exists:\n\t' ~ identifier, debug_mode) -}}
 
     {%- set relation_exists, relation =
                 get_or_create_relation(
@@ -363,7 +368,7 @@
 
 -- creating relation if it doesn't exist
     {%- if not relation_exists and execute -%}
-        {{- log_colored(
+        {{- diu.log_colored(
                 'Creating non-existing relation:\n\t' ~ identifier, debug_mode) -}}
 
         {%- if type == 'table' -%}
@@ -372,7 +377,7 @@
             {%- do create_view_as(relation, sql) -%}
         {%- endif -%}
 
-        {{- log_colored(
+        {{- diu.log_colored(
                 'Relation has been created:\n\t' ~ identifier, debug_mode) -}}
     {%- endif -%}
 
@@ -444,20 +449,21 @@
         Nested array of intervals with the following structure:
             [[[left_where_condition, right_where_condition], ...], left_having_condition, right_having_condition]
 #}
-    {%- set dt = modules.datetime -%}
+    {%- set dt  = modules.datetime -%}
+    {%- set diu = dbt_improvado_utils -%}
 
 -- nested array of intervals for each lookback window
     {%- set lookback_windows_intervals = [] -%}
 
 -- base date of each interval; increases on every iteration for batch_size value
-    {%- set interval_start = start_time + get_unit_interval(value=interval_offset, unit=time_unit_name) -%}
+    {%- set interval_start = start_time + diu.get_unit_interval(value=interval_offset, unit=time_unit_name) -%}
     {%- set base_date_from = dt.datetime.combine(interval_start.date(), dt.time.min) -%}
 
     {%- for lookback_window in lookback_windows_list -%}
     -- start date of each batch with lookback window
-        {%- set left_where_condition = base_date_from - get_unit_interval(value=lookback_window, unit=time_unit_name) -%}
+        {%- set left_where_condition = base_date_from - diu.get_unit_interval(value=lookback_window, unit=time_unit_name) -%}
     -- end date of each batch
-        {%- set right_where_condition = base_date_from + get_unit_interval(value=batch_size, unit=time_unit_name) -%}
+        {%- set right_where_condition = base_date_from + diu.get_unit_interval(value=batch_size, unit=time_unit_name) -%}
 
         {%- do lookback_windows_intervals.append([left_where_condition, right_where_condition]) -%}
     {%- endfor -%}
@@ -468,7 +474,7 @@
     {%- else -%}
         {%- set left_having_condition = base_date_from -%}
     {%- endif -%}
-    {%- set right_having_condition = base_date_from + get_unit_interval(value=batch_size, unit=time_unit_name) -%}
+    {%- set right_having_condition = base_date_from + diu.get_unit_interval(value=batch_size, unit=time_unit_name) -%}
 
     {{- return([lookback_windows_intervals, [left_having_condition, right_having_condition]]) -}}
 {%- endmacro -%}
