@@ -31,7 +31,7 @@
 -- base settings -------------------------------------------------------------------------------------------------------
     {%- set re                          = modules.re -%}
     {%- set diu                         = dbt_improvado_utils -%}
-    {%- set is_prod_schema              = mcr_is_prod_schema() -%}
+    {%- set is_prod_schema              = diu.mcr_is_prod_schema() -%}
     {%- set target_relation_exists,
             target_relation             = get_or_create_relation(none, target.schema, this.identifier, none) -%}
     {%- set backup_relation             = make_backup_relation(target_relation, none, suffix='__dbt_backup') -%}
