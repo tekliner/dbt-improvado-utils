@@ -15,10 +15,11 @@
     {%- set on_schema_change                    = config.get('on_schema_change', default='fail') -%}
 
 -- microbatch settings
-    {%- set microbatch_settings_pattern         = '\s*--\s*microbatch:\s*(\w+),\s*(\d+)\s*.*`.*`\.`(.*)`' -%}
-    {%- set microbatch_settings                 = re.findall(microbatch_settings_pattern, sql) -%}
+    {%- set microbatch_settings_pattern         = '\s*--\s*microbatch:\s*(\w+),\s*(\d+)\s*.*`.+`\.`(.+)`\s+(final)?' -%}
+    {%- set microbatch_settings                 = re.findall(microbatch_settings_pattern, sql, flags=re.IGNORECASE) -%}
 
     {%- set input_models_list                   = [] -%}
+    {%- set final_settings_list                 = [] -%}
     {%- set input_columns_list                  = [] -%}
     {%- set input_lookback_windows_list         = [] -%}
 
@@ -53,18 +54,22 @@
 -- getting microbatch settings
     {%- for setting in microbatch_settings -%}
         {%- do input_models_list.append(setting[2]) -%}
+        {%- do final_settings_list.append(setting[3]) -%}
         {%- do input_columns_list.append(setting[0]) -%}
         {%- do input_lookback_windows_list.append(setting[1] | int) -%}
     {%- endfor -%}
 
     {{- diu.log_colored(
             'Input models:\n\t' ~ input_models_list | join('\n\t') ~
+            '\nFinal is set for:\n\t' ~
+                zip(input_models_list, final_settings_list) | selectattr(1) | map(attribute=0) | join('\n\t')  ~
             '\nInput columns:\n\t' ~ input_columns_list | join('\n\t') ~
             '\nInput lookback windows:\n\t' ~ input_lookback_windows_list | join('\n\t') ~
             '\nFixed now time:\n\t' ~ fixed_now, silence_mode) -}}
 
--- clearing sql from microbatch settings
+-- clearing sql from microbatch and final settings
     {%- set sql = re.sub('\s*--\s*microbatch:\s*\w+,\s*\d+', '', sql) -%}
+    {%- set sql = re.sub('`(.+)`\.`(.+)`\s+final', '`\\1`.`\\2`', sql, flags=re.IGNORECASE) -%}
 
     {%- if target_schema == production_schema -%}
         {{- diu.log_colored('Starting to build to production schema: ' ~ target_schema, silence_mode) -}}
@@ -195,6 +200,7 @@
                         sql=sql,
                         target_relation=tmp_relation,
                         input_models_list=input_models_list,
+                        final_settings_list=final_settings_list,
                         input_columns_list=input_columns_list,
                         where_conditions=where_conditions,
                         having_conditions=having_conditions,
@@ -206,7 +212,7 @@
                 {{- diu.log_colored('Inserting into: ' ~ tmp_relation, silence_mode) -}}
             {%- endif -%}
 
-        {{- diu.log_colored(insert_query[250:1000] ~ '\n\n...\n\n' ~ insert_query[-200:], debug_mode) -}}
+        {{- diu.log_colored(insert_query[250:1100] ~ '\n\n...\n\n' ~ insert_query[-200:], debug_mode) -}}
 
         {{- diu.log_colored(
             'Inserting batch: ' ~ (i + 1) ~ ' out of ' ~ parts_count ~
@@ -480,13 +486,14 @@
 {%- endmacro -%}
 
 
-{%- macro get_insert_query(sql, target_relation, input_models_list, input_columns_list, where_conditions, having_conditions, output_column, debug_mode ) -%}
+{%- macro get_insert_query(sql, target_relation, input_models_list, final_settings_list, input_columns_list, where_conditions, having_conditions, output_column, debug_mode ) -%}
 {#
     Generates the insert query
     Arguments:
         sql(string):                The sql query
         target_relation(string):    The target table
         input_models_list(array):   The list of input models
+        final_settings_list(array): The list of final settings
         input_columns_list(array):  The list of input columns
         where_conditions(array):    The list of where conditions
         having_conditions(array):   The list of having conditions
@@ -500,15 +507,20 @@
 
     {%- for i in range(input_models_list | length) -%}
         {%- set input_model = input_models_list[i] -%}
+        {%- set final_setting = final_settings_list[i] -%}
         {%- set input_column = input_columns_list[i] -%}
         {%- set left_where, right_where = where_conditions[i] -%}
 
         {%- set input_relation = '`{}`.`{}`'.format(schema, input_model) -%}
         {%- set ia_relation = '`internal_analytics`.`{}`'.format(input_model) -%}
-        {%- set sql_replacement_template = "{} where {} between '{}' and '{}'" -%}
+        {%- set sql_replacement_template = "{} {} where {} between '{}' and '{}'" -%}
 
-        {%- set current_schema_replacement = sql_replacement_template.format(input_relation, input_column, left_where, right_where) -%}
-        {%- set ia_schema_replacement = sql_replacement_template.format(ia_relation, input_column, left_where, right_where) -%}
+        {%- set current_schema_replacement = sql_replacement_template.format(
+                                                input_relation, final_setting, input_column, left_where, right_where) -%}
+
+        {%- set ia_schema_replacement = sql_replacement_template.format(
+                                                ia_relation, final_setting, input_column, left_where, right_where) -%}
+
 
         {%- set model_sql.value = model_sql.value | replace(input_relation, current_schema_replacement) -%}
         {# when --defer is used on staging/dev schema current relation will be `internal_analytics`.`model` and "current_schema_replacement" won't work #}
