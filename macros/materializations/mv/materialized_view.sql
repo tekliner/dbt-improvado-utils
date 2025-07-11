@@ -7,7 +7,7 @@
 
 
 {% materialization custom_materialized_view, adapter='clickhouse' -%}
-    -- set 'mv_allowed_env' to 'prod_dev' on model config to allow development materialized views
+    -- set 'mv_allowed_env' to 'all' on model config to allow development materialized views
     {% set mv_allowed_env = config.get('mv_allowed_env', default='prod') %}
     {% set mv_allowed = False %}
     {% set is_prod_schema = dbt_improvado_utils.mcr_is_prod_schema() %}
@@ -30,7 +30,7 @@
     {% do dbt_improvado_utils.create_temporary_empty_table(tmp_relation, sql) %}
     {{ to_drop.append(tmp_relation) }}
 
-    {% if is_prod_schema and mv_allowed_env == 'prod' or mv_allowed_env == 'prod_dev' %}
+    {% if is_prod_schema and mv_allowed_env == 'prod' or mv_allowed_env == 'all' %}
         {% set mv_allowed = True %}
     {% endif %}
 

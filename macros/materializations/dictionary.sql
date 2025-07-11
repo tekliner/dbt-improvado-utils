@@ -140,7 +140,7 @@
     {%- do run_query(sql) -%}
 
     {{- log('Checking if the dictionary is queryable', info=true) -}}
-    {%- set query_result = run_query('select 1 from ' ~ backup_relation) -%}
+    {%- set query_result = run_query('select 1 from ' ~ backup_relation ~ ' limit 1') -%}
 
     {%- if query_result is none -%}
         {%- do exceptions.raise_compiler_error('Dictionary is not queryable. Aborting') -%}
