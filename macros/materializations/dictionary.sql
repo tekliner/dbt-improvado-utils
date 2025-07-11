@@ -1,4 +1,4 @@
-{%- materialization dictionary -%}
+{%- materialization custom_dictionary -%}
     {# 
         Steamlines a dictionary creating process by reducing the amount of boilerplate code.
         Creates a dictionary with a "direct" layout for "dev" or "staging" schemas; otherwise, keeps the settings unchanged.
@@ -97,6 +97,9 @@
             {%- endif -%}
         {%- endfor -%}
 
+    {%- elif columns_to_include == '*' -%}
+        {%- set filtered_columns.value = source_columns -%}
+
     {%- endif -%}
 
     -- filtered columns
@@ -137,11 +140,14 @@
     {%- do run_query(sql) -%}
 
     {{- log('Checking if the dictionary is queryable', info=true) -}}
-    {%- set query_result = run_query('select 1 from ' ~ backup_relation ~ ' limit 1') -%}
+    {%- set query_result = run_query('select 1 from ' ~ backup_relation) -%}
 
     {%- if query_result is none -%}
         {%- do exceptions.raise_compiler_error('Dictionary is not queryable. Aborting') -%}
     {%- endif -%}
+
+    {{- log('Dictionary is queryable', info=true) -}}
+    {{- log('Replacing the backup relation with the target relation', info=true) -}}
 
     -- if the target relation exists, exchange the tables; rename otherwise
     {%- if target_relation_exists -%}
@@ -150,6 +156,8 @@
     {%- else -%}
         {%- do adapter.rename_relation(backup_relation, target_relation) -%}
     {%- endif -%}
+
+    {{- log('Dictionary ' ~ target_relation ~ ' is ready', info=true) -}}
 
     -- dropping the backup relation
     {%- do diu.mcr_drop_relation_if_exists(backup_relation) -%}
