@@ -65,13 +65,15 @@
 
     {% do drop_relation_if_exists(tmp_relation) %}
 
-    {% if full_rebuild or create_matview and mv_allowed %}
+    {% if full_rebuild %}
         {% do dbt_improvado_utils.materialize_table(target_table, sql) %}
+    {% endif %}
 
+    {% if full_rebuild or create_matview and mv_allowed %}
         {% if mv_allowed %}
             {% do dbt_improvado_utils.materialize_matview(target_matview, target_table, sql) %}
         {% else %}
-            {% do log("MV creation isn't allowed, skipping", True) %}
+            {% do log("MV creation skipped", True) %}
         {% endif %}
 
         {{ run_hooks(post_hooks, inside_transaction=True) }}
