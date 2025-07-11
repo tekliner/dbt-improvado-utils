@@ -6,7 +6,11 @@
 
 
 
-{% materialization materialized_view, adapter='clickhouse' -%}
+{% materialization custom_materialized_view, adapter='clickhouse' -%}
+    -- set 'mv_allowed_env' to 'all' on model config to allow development materialized views
+    {% set mv_allowed_env = config.get('mv_allowed_env', default='prod') %}
+    {% set mv_allowed = False %}
+    {% set is_prod_schema = dbt_improvado_utils.mcr_is_prod_schema() %}
     {% set target_table_exists, target_table = get_or_create_relation(database=this.database, schema=this.schema, identifier=this.identifier, type='table') -%}
     {% set existing_target_table = load_cached_relation(target_table) %}
 
@@ -26,13 +30,17 @@
     {% do dbt_improvado_utils.create_temporary_empty_table(tmp_relation, sql) %}
     {{ to_drop.append(tmp_relation) }}
 
+    {% if is_prod_schema and mv_allowed_env == 'prod' or mv_allowed_env == 'all' %}
+        {% set mv_allowed = True %}
+    {% endif %}
+
     {% if existing_matview is not none %}
         -- check schema consistency if matview exists
         {% set schema_changes_dict = check_for_schema_changes(tmp_relation, existing_matview) %}
         {% if schema_changes_dict['schema_changed'] or existing_target_table is none %}
             {% set full_rebuild = True %}
         {% endif %}
-        {% do log("MV exists, schema_changed=" ~ schema_changes_dict['schema_changed'] ~ ", existing_target_table=" ~ existing_target_table, True) %}
+        {% do log("MV exists, schema_changed=" ~ schema_changes_dict['schema_changed'] ~ ", mv_allowed=" ~ mv_allowed ~ ", existing_target_table=" ~ existing_target_table, True) %}
 
     {% else %}
         -- matview doesnt exist, full build checks
@@ -45,12 +53,12 @@
             {% endif %}
             -- target consistent, create matview only
             {% set create_matview = True %}
-            {% do log("target exists, schema_changed=" ~ schema_changes_dict['schema_changed'], True) %}
+            {% do log("Target exists, schema_changed=" ~ schema_changes_dict['schema_changed'] ~ ", mv_allowed=" ~ mv_allowed, True) %}
 
         {% else %}
             -- target doesnt exist, full rebuild
             {% set full_rebuild = True %}
-            {% do log("target doesn't exist, full build", True) %}
+            {% do log("Target doesn't exist, full build", True) %}
         {% endif %}
 
     {% endif %}
@@ -61,12 +69,16 @@
         {% do dbt_improvado_utils.materialize_table(target_table, sql) %}
     {% endif %}
 
-    {% if full_rebuild or create_matview %}
-        {% do dbt_improvado_utils.materialize_matview(target_matview, target_table, sql) %}
+    {% if full_rebuild or (create_matview and mv_allowed) %}
+        {% if mv_allowed %}
+            {% do dbt_improvado_utils.materialize_matview(target_matview, target_table, sql) %}
+        {% else %}
+            {% do log("MV creation skipped", True) %}
+        {% endif %}
 
         {{ run_hooks(post_hooks, inside_transaction=True) }}
 
-          -- cleanup
+        -- cleanup
         {% set should_revoke = should_revoke(existing_target_table, full_refresh_mode=True) %}
         {% do apply_grants(target_table, grant_config, should_revoke=should_revoke) %}
 
