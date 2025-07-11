@@ -69,7 +69,7 @@
         {% do dbt_improvado_utils.materialize_table(target_table, sql) %}
     {% endif %}
 
-    {% if full_rebuild or create_matview and mv_allowed %}
+    {% if full_rebuild or (create_matview and mv_allowed) %}
         {% if mv_allowed %}
             {% do dbt_improvado_utils.materialize_matview(target_matview, target_table, sql) %}
         {% else %}
