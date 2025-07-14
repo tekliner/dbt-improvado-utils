@@ -480,7 +480,7 @@
     {%- else -%}
         {%- set left_having_condition = base_date_from -%}
     {%- endif -%}
-    {%- set right_having_condition = base_date_from + diu.get_unit_interval(value=batch_size, unit=time_unit_name) -%}
+    {%- set right_having_condition = interval_start + diu.get_unit_interval(value=batch_size, unit=time_unit_name) -%}
 
     {{- return([lookback_windows_intervals, [left_having_condition, right_having_condition]]) -}}
 {%- endmacro -%}
