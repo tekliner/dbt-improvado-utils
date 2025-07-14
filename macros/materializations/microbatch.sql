@@ -475,11 +475,7 @@
     {%- endfor -%}
 
 -- where conditions for final select from from CTE
-    {%- if start_time.date() == interval_start.date() -%}
-        {%- set left_having_condition = interval_start -%}
-    {%- else -%}
-        {%- set left_having_condition = base_date_from -%}
-    {%- endif -%}
+    {%- set left_having_condition = interval_start -%}
     {%- set right_having_condition = interval_start + diu.get_unit_interval(value=batch_size, unit=time_unit_name) -%}
 
     {{- return([lookback_windows_intervals, [left_having_condition, right_having_condition]]) -}}
