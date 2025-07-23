@@ -1,0 +1,18 @@
+default:
+  target: dev
+  outputs:
+    dev:
+      type: clickhouse
+      use_mutations_sync: False
+      secure: False
+      host: '{{ env_var("CLICKHOUSE_HOST") }}'
+      port: '{{ env_var("CLICKHOUSE_PORT") | int }}'
+      user: '{{ env_var("CLICKHOUSE_USER") }}'
+      password: '{{ env_var("CLICKHOUSE_PASSWORD") }}'
+      schema: '{{ env_var("CLICKHOUSE_DATABASE") }}'
+      threads: 6
+      send_receive_timeout: 1200
+      check_exchange: False
+      retries: 2
+      custom_settings:
+        check_table_dependencies: 0

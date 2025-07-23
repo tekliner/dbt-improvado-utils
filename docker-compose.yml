@@ -1,0 +1,30 @@
+services:
+  dbt:
+    container_name: dbt
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    ports:
+      - '8080:8080'
+    networks:
+      - app
+    depends_on:
+      - clickhouse
+    entrypoint: ['sleep', 'infinity']
+
+  clickhouse:
+    container_name: dbt_clickhouse
+    image: clickhouse/clickhouse-server:25.3.2.39
+    environment:
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: password
+    ports:
+      - '8125:8123'
+    networks:
+      - app
+
+networks:
+  app:
+    driver: bridge
