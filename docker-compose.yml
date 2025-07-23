@@ -16,10 +16,10 @@ services:
 
   clickhouse:
     container_name: dbt_clickhouse
-    image: clickhouse/clickhouse-server:25.3.2.39
+    image: clickhouse/clickhouse-server:24.3.15.72  # lisbon palantir version
     environment:
-      CLICKHOUSE_USER: default
-      CLICKHOUSE_PASSWORD: password
+      - CLICKHOUSE_USER=$CLICKHOUSE_USER
+      - CLICKHOUSE_PASSWORD=$CLICKHOUSE_PASSWORD
     ports:
       - '8125:8123'
     networks:
