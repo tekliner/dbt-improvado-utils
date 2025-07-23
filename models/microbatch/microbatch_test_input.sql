@@ -1,5 +1,5 @@
 select
-    now() - toIntervalHour(number)                      as event_datetime,
+    now() - toIntervalHour(number)                          as event_datetime,
 
     toUInt32(
         cityHash64(number)

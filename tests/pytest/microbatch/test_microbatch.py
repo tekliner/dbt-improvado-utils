@@ -49,6 +49,6 @@ def test_batching_24h(setup_test_environment):
         ]
     )
 
-    expected_df = con.query_df(result_query.format(table_name=MICROBATCH_INPUT_MODEL))
+    expected_df = con.query_df(result_query.format(table_name=MICROBATCH_TEST_MODEL))
 
     assert expected_df['rows_count'][0] == 1000
