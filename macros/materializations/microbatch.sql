@@ -156,7 +156,7 @@
                     unit=time_unit_name) -%}
 
     {{- diu.log_colored('Calculating interval parts', silence_mode) -}}
-    {% set parts_count = [(interval_range / batch_size) | round(0, 'ceil') | int, 2] | max %}
+    {%- set parts_count = [(interval_range / batch_size) | round(0, 'ceil') | int, 2] | max -%}
     {{- diu.log_colored('Interval parts count:\n\t' ~ parts_count, silence_mode) -}}
 
 -- temporary table creation
