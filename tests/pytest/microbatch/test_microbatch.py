@@ -31,7 +31,7 @@ class TestMicrobatch:
     def setup_test_environment(self, ch_client):
         """Pretest setup fixture"""
 
-        run_dbt(['run', '--select', f'+{MICROBATCH_INPUT_MODEL}'])
+        run_dbt(['run', '--select', f'{MICROBATCH_INPUT_MODEL}'])
 
         con = ch_client
         timestamps = con.query_df(
@@ -44,14 +44,15 @@ class TestMicrobatch:
 
         return {'min_timestamp': min_timestamp, 'max_timestamp': max_timestamp}
 
-    def test_batching_1h(self, ch_client, setup_test_environment):
-        """
-        Microbatch test with 1h batch size
-        """
-
+    def execute_test(self, ch_client, test_params):
         con = ch_client
-        max_timestamp = setup_test_environment['max_timestamp']
-        offset_hours = 50
+        dbt_vars = {
+            'materialization_start_date': test_params["materialization_start_date"]
+        }
+        if test_params.get('batch_size'):
+            dbt_vars['batch_size'] = test_params["batch_size"]
+
+        query_condition = test_params['query_condition'] if test_params.get('query_condition') else ''
 
         run_dbt(
             [
@@ -59,10 +60,7 @@ class TestMicrobatch:
                 '--select',
                 f'{MICROBATCH_TEST_MODEL}',
                 '--vars',
-                f'''{{
-                    "materialization_start_date": "{(max_timestamp - timedelta(hours=offset_hours)).strftime("%Y-%m-%d")}",
-                    "batch_size": 1
-                }}''',
+                f'{dbt_vars}',
                 '--full-refresh',
             ]
         )
@@ -73,70 +71,62 @@ class TestMicrobatch:
 
         expected_result = con.query_df(
             QUERY_COUNT_ROWS.format(table_name=MICROBATCH_INPUT_MODEL)
-            + f"where event_datetime >= toDate('{max_timestamp}' - interval {offset_hours} hour)"
+            + query_condition
         )
 
         assert expected_result['rows_count'][0] == actual_result['rows_count'][0]
+
+    # tests definition
+    def test_batching_1h(self, ch_client, setup_test_environment):
+        """
+        Microbatch test with 1h batch size
+        """
+
+        max_timestamp = setup_test_environment['max_timestamp']
+        offset_hours = 50
+        materialization_start_date = (
+            max_timestamp - timedelta(hours=offset_hours)
+        ).strftime("%Y-%m-%d")
+        query_condition = f"where event_datetime >= toDate('{max_timestamp}' - interval {offset_hours} hour)"
+
+        test_params = {
+            'materialization_start_date': materialization_start_date,
+            'batch_size': 1,
+            'query_condition': query_condition,
+        }
+
+        self.execute_test(ch_client, test_params)
 
     def test_batching_8h(self, ch_client, setup_test_environment):
         """
         Microbatch test with 8h batch size
         """
 
-        con = ch_client
         max_timestamp = setup_test_environment['max_timestamp']
         offset_hours = 100
+        materialization_start_date = (
+            max_timestamp - timedelta(hours=offset_hours)
+        ).strftime("%Y-%m-%d")
+        query_condition = f"where event_datetime >= toDate('{max_timestamp}' - interval {offset_hours} hour)"
 
-        run_dbt(
-            [
-                'run',
-                '--select',
-                f'{MICROBATCH_TEST_MODEL}',
-                '--vars',
-                f'''{{
-                    "materialization_start_date": "{(max_timestamp - timedelta(hours=offset_hours)).strftime("%Y-%m-%d")}",
-                    "batch_size": 8
-                }}''',
-                '--full-refresh',
-            ]
-        )
+        test_params = {
+            'materialization_start_date': materialization_start_date,
+            'batch_size': 8,
+            'query_condition': query_condition,
+        }
 
-        actual_result = con.query_df(
-            QUERY_COUNT_ROWS.format(table_name=MICROBATCH_TEST_MODEL)
-        )
-
-        expected_result = con.query_df(
-            QUERY_COUNT_ROWS.format(table_name=MICROBATCH_INPUT_MODEL)
-            + f"where event_datetime >= toDate('{max_timestamp}' - interval {offset_hours} hour)"
-        )
-
-        assert expected_result['rows_count'][0] == actual_result['rows_count'][0]
+        self.execute_test(ch_client, test_params)
 
     def test_batching_24h(self, ch_client, setup_test_environment):
         """
         Microbatch test with 24h batch size
         """
 
-        con = ch_client
         min_timestamp = setup_test_environment['min_timestamp']
+        materialization_start_date = min_timestamp.strftime("%Y-%m-%d")
 
-        run_dbt(
-            [
-                'run',
-                '--select',
-                f'{MICROBATCH_TEST_MODEL}',
-                '--vars',
-                f'{{"materialization_start_date": "{min_timestamp.strftime("%Y-%m-%d")}"}}',
-                '--full-refresh',
-            ]
-        )
+        test_params = {
+            'materialization_start_date': materialization_start_date,
+        }
 
-        actual_result = con.query_df(
-            QUERY_COUNT_ROWS.format(table_name=MICROBATCH_TEST_MODEL)
-        )
-
-        expected_result = con.query_df(
-            QUERY_COUNT_ROWS.format(table_name=MICROBATCH_INPUT_MODEL)
-        )
-
-        assert expected_result['rows_count'][0] == actual_result['rows_count'][0]
+        self.execute_test(ch_client, test_params)
