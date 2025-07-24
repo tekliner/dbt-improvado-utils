@@ -1,3 +1,10 @@
+{{
+  config(
+    enabled = var('enabled', false)
+    )
+}}
+
+
 select
     now() - toIntervalHour(number)                          as event_datetime,
 

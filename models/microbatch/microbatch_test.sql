@@ -9,6 +9,7 @@
     overwrite_size              = var('overwrite_size', default=12),
     partition_by                = 'toYYYYMM(event_datetime)',
     order_by                    = 'event_datetime',
+    enabled                     = var('enabled', false),
     )
 }}
 
