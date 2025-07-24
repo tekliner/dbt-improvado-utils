@@ -31,7 +31,15 @@ class TestMicrobatch:
     def setup_test_environment(self, ch_client):
         """Pretest setup fixture"""
 
-        run_dbt(['run', '--select', f'{MICROBATCH_INPUT_MODEL}'])
+        run_dbt(
+            [
+                'run',
+                '--select',
+                f'{MICROBATCH_INPUT_MODEL}',
+                '--vars',
+                '{"enabled": true}',
+            ]
+        )
 
         con = ch_client
         timestamps = con.query_df(
@@ -47,7 +55,8 @@ class TestMicrobatch:
     def execute_test(self, ch_client, test_params):
         con = ch_client
         dbt_vars = {
-            'materialization_start_date': test_params["materialization_start_date"]
+            'materialization_start_date': test_params["materialization_start_date"],
+            'enabled': True,
         }
         if test_params.get('batch_size'):
             dbt_vars['batch_size'] = test_params["batch_size"]
