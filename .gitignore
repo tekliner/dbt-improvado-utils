@@ -1,0 +1,9 @@
+# dbt
+.user.yml
+*.log
+target/
+
+# python
+.pytest_cache/
+__pycache__
+*venv/

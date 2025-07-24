@@ -128,7 +128,7 @@
     {%- if target_relation_exists and not full_refresh -%}
     -- getting max datetime from target relation
         {%- set target_relation_max_datetime =
-                    diu.get_max_datetime(target_relation, output_datetime_column) -%}
+                    diu.get_max_datetime(target_relation, output_datetime_column).replace(tzinfo=None) -%}
 
         {%- set last_record_datetime =
                     [target_relation_max_datetime, materialization_start_date] | max -%}
@@ -148,15 +148,15 @@
 
     {%- endif -%}
 
--- interval counts calculation TODO what value use instead of input_lookback_windows_list[0] if there are several lookback windows?
+-- interval counts calculation
     {%- set interval_range =
                 diu.get_unit_datediff(
                     startdate=start_time,
                     enddate=fixed_now,
-                    unit=time_unit_name) - input_lookback_windows_list[0] -%}
+                    unit=time_unit_name) -%}
 
     {{- diu.log_colored('Calculating interval parts', silence_mode) -}}
-    {%- set parts_count = [((interval_range / batch_size + 1.5) | round | int), 2] | max -%}
+    {%- set parts_count = [(interval_range / batch_size) | round(0, 'ceil') | int, 2] | max -%}
     {{- diu.log_colored('Interval parts count:\n\t' ~ parts_count, silence_mode) -}}
 
 -- temporary table creation
@@ -212,11 +212,11 @@
                 {{- diu.log_colored('Inserting into: ' ~ tmp_relation, silence_mode) -}}
             {%- endif -%}
 
-        {{- diu.log_colored(insert_query[250:1100] ~ '\n\n...\n\n' ~ insert_query[-200:], debug_mode) -}}
-
         {{- diu.log_colored(
             'Inserting batch: ' ~ (i + 1) ~ ' out of ' ~ parts_count ~
             '\nDate range: from ' ~  having_conditions[0] ~ ' to ' ~  having_conditions[1], silence_mode) -}}
+
+        {{- diu.log_colored(insert_query[250:1100] ~ '\n\n...\n\n' ~ insert_query[-200:], debug_mode) -}}
 
         -- insert query execution
             {%- call statement('inserting_new_data_to_temporary_table') -%}
@@ -263,7 +263,7 @@
         {%- set color_code = '33m' -%}
     {%- endif -%}
 
-    {{- log(color_code_start ~ color_code ~ message ~ '\033[00m', silence_mode) -}}
+    {{- log(this.identifier ~ ' log:' ~ color_code_start ~ color_code ~ message ~ '\033[00m', silence_mode) -}}
 {%- endmacro -%}
 
 
@@ -337,7 +337,7 @@
         {{- diu.log_colored(
                 'Checking for name and type consistency is done',
                 silence_mode,
-                color='red' if is_schema_changed.value else '') -}}
+                color='red' if is_schema_changed.value else 'green') -}}
     {%- endif -%}
 
     {{- return(is_schema_changed.value) -}}
@@ -463,24 +463,20 @@
 
 -- base date of each interval; increases on every iteration for batch_size value
     {%- set interval_start = start_time + diu.get_unit_interval(value=interval_offset, unit=time_unit_name) -%}
-    {%- set base_date_from = dt.datetime.combine(interval_start.date(), dt.time.min) -%}
+    {%- set interval_end = interval_start + diu.get_unit_interval(value=batch_size, unit=time_unit_name) -%}
 
     {%- for lookback_window in lookback_windows_list -%}
     -- start date of each batch with lookback window
-        {%- set left_where_condition = base_date_from - diu.get_unit_interval(value=lookback_window, unit=time_unit_name) -%}
+        {%- set left_where_condition = interval_start - diu.get_unit_interval(value=lookback_window, unit=time_unit_name) -%}
     -- end date of each batch
-        {%- set right_where_condition = base_date_from + diu.get_unit_interval(value=batch_size, unit=time_unit_name) -%}
+        {%- set right_where_condition = interval_end -%}
 
         {%- do lookback_windows_intervals.append([left_where_condition, right_where_condition]) -%}
     {%- endfor -%}
 
 -- where conditions for final select from from CTE
-    {%- if start_time.date() == interval_start.date() -%}
-        {%- set left_having_condition = interval_start -%}
-    {%- else -%}
-        {%- set left_having_condition = base_date_from -%}
-    {%- endif -%}
-    {%- set right_having_condition = base_date_from + diu.get_unit_interval(value=batch_size, unit=time_unit_name) -%}
+    {%- set left_having_condition = interval_start -%}
+    {%- set right_having_condition = interval_end -%}
 
     {{- return([lookback_windows_intervals, [left_having_condition, right_having_condition]]) -}}
 {%- endmacro -%}

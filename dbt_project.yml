@@ -2,4 +2,12 @@ name: 'dbt_improvado_utils'
 version: '1.0.0'
 config-version: 2
 
-macro-paths: ["macros"]
+profile: 'default'
+
+seed-paths: ['data']
+macro-paths: ['macros']
+
+quoting:
+  database: false
+  schema: false
+  identifier: false

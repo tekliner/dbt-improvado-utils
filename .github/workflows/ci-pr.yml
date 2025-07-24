@@ -1,0 +1,34 @@
+name: PR
+on:
+  - pull_request
+
+concurrency:
+  group: ${{ github.ref }}-pr
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  actions: read
+  checks: read
+  contents: read
+  pull-requests: read
+  statuses: write
+  deployments: write
+
+jobs:
+  run_tests:
+    name: 🛠️Running tests
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build containers
+        run: docker compose up -d
+
+      - name: Run tests
+        run: docker exec -i dbt python -m pytest -rA tests/pytest/
+
+      - name: Stop containers
+        run: docker compose down

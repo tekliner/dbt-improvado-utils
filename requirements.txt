@@ -1,0 +1,4 @@
+dbt-clickhouse~=1.8.0
+clickhouse-connect~=0.8.6
+pytest~=8.4.1
+pandas~=2.3.1

@@ -1,0 +1,6 @@
+# dbt
+target/
+logs/
+
+# python
+*venv/
