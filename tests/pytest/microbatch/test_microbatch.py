@@ -36,7 +36,7 @@ class TestMicrobatch:
         con = ch_client
         timestamps = con.query_df(
             QUERY_TIMESTAMP.format(
-                table_name=MICROBATCH_TEST_MODEL, timestamp_column='event_datetime'
+                table_name=MICROBATCH_INPUT_MODEL, timestamp_column='event_datetime'
             )
         )
         min_timestamp = timestamps['min_timestamp'][0]
