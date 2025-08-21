@@ -15,7 +15,7 @@
     {%- set on_schema_change                    = config.get('on_schema_change', default='fail') -%}
 
 -- microbatch settings
-    {%- set microbatch_settings_pattern         = '\s*--\s*microbatch:\s*(\w+),\s*(\d+)\s*.*`.+`\.`(.+)`\s+(final)?' -%}
+    {%- set microbatch_settings_pattern         = '\s*--\s*microbatch:\s*(\w+),\s*(\d+)\s*.*`.+`\.`(.+)`\s*(final)?' -%}
     {%- set microbatch_settings                 = re.findall(microbatch_settings_pattern, sql, flags=re.IGNORECASE) -%}
 
     {%- set input_models_list                   = [] -%}
