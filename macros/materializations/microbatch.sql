@@ -15,13 +15,14 @@
     {%- set on_schema_change                    = config.get('on_schema_change', default='fail') -%}
 
 -- microbatch settings
-    {%- set microbatch_settings_pattern         = '\s*--\s*microbatch:\s*(\w+),\s*(\d+)\s*.*`.+`\.`(.+)`\s*(final)?' -%}
+    {%- set microbatch_settings_pattern         = '\s*--\s*microbatch:\s*(\w+),\s*(\d+)(?:,\s*(\d+))?\s*.*`.+`\.`(.+)`\s+(final)?' -%}
     {%- set microbatch_settings                 = re.findall(microbatch_settings_pattern, sql, flags=re.IGNORECASE) -%}
 
     {%- set input_models_list                   = [] -%}
     {%- set final_settings_list                 = [] -%}
     {%- set input_columns_list                  = [] -%}
     {%- set input_lookback_windows_list         = [] -%}
+    {%- set input_lookforward_windows_list      = [] -%}
 
 -- output model data
     {%- set output_datetime_column              = config.require('output_datetime_column') -%}
@@ -53,10 +54,11 @@
 
 -- getting microbatch settings
     {%- for setting in microbatch_settings -%}
-        {%- do input_models_list.append(setting[2]) -%}
-        {%- do final_settings_list.append(setting[3]) -%}
+        {%- do input_models_list.append(setting[3]) -%}
+        {%- do final_settings_list.append(setting[4]) -%}
         {%- do input_columns_list.append(setting[0]) -%}
         {%- do input_lookback_windows_list.append(setting[1] | int) -%}
+        {%- do input_lookforward_windows_list.append((setting[2] | int) if setting[2] else 0) -%}
     {%- endfor -%}
 
     {{- diu.log_colored(
@@ -65,10 +67,11 @@
                 zip(input_models_list, final_settings_list) | selectattr(1) | map(attribute=0) | join('\n\t')  ~
             '\nInput columns:\n\t' ~ input_columns_list | join('\n\t') ~
             '\nInput lookback windows:\n\t' ~ input_lookback_windows_list | join('\n\t') ~
+            '\nInput lookforward windows:\n\t' ~ input_lookforward_windows_list | join('\n\t') ~
             '\nFixed now time:\n\t' ~ fixed_now, silence_mode) -}}
 
 -- clearing sql from microbatch and final settings
-    {%- set sql = re.sub('\s*--\s*microbatch:\s*\w+,\s*\d+', '', sql) -%}
+    {%- set sql = re.sub('\s*--\s*microbatch:\s*\w+,\s*\d+(?:,\s*\d+)?', '', sql) -%}
     {%- set sql = re.sub('`(.+)`\.`(.+)`\s+final', '`\\1`.`\\2`', sql, flags=re.IGNORECASE) -%}
 
     {%- if target_schema == production_schema -%}
@@ -192,6 +195,7 @@
                         time_unit_name=time_unit_name,
                         start_time=start_time,
                         lookback_windows_list=input_lookback_windows_list,
+                        lookforward_windows_list=input_lookforward_windows_list,
                         batch_size=batch_size) -%}
 
     -- inserting intervals list calculation
@@ -220,8 +224,8 @@
 
         -- insert query execution
             {%- call statement('inserting_new_data_to_temporary_table') -%}
-                {{- insert_query -}} 
-            {%- endcall -%} 
+                {{- insert_query -}}
+            {%- endcall -%}
 
         {%- endif -%}
     {%- endfor -%}
@@ -257,9 +261,9 @@
 
     {%- if color == 'green' -%}
         {%- set color_code = '32m' -%}
-    {%- elif color == 'red' -%} 
+    {%- elif color == 'red' -%}
         {%- set color_code = '31m' -%}
-    {%- elif color == 'yellow' -%} 
+    {%- elif color == 'yellow' -%}
         {%- set color_code = '33m' -%}
     {%- endif -%}
 
@@ -324,7 +328,7 @@
                 {%- set column_old = columns_old[i] -%}
                 {%- set column_new = columns_new[i] -%}
 
-                {%- if column_old.data_type != column_new.data_type or column_old.name != column_new.name -%} 
+                {%- if column_old.data_type != column_new.data_type or column_old.name != column_new.name -%}
                     {%- set is_schema_changed.value = true -%}
                     {{- diu.log_colored(
                             'Column name/type mismatch:' ~
@@ -357,7 +361,7 @@
         debug_mode(bool):    Should the debug messages be printed
         silence_mode(bool):  Should the log messages be silenced
     Returns:
-        Array of two elements: 
+        Array of two elements:
             relation_exists(bool):      If the relation exists
             Relation_obj(api.Relation): The relation object
 #}
@@ -414,7 +418,7 @@
 
 
 {%- macro get_unit_interval(value, unit) -%}
-{# 
+{#
     A duration expressing the difference between two date, time, or datetime instances to unit resolution
     Arguments:
         value(int):     The numerical value of the interval
@@ -442,15 +446,16 @@
 {%- endmacro -%}
 
 
-{%- macro get_intervals_list(interval_offset, time_unit_name, start_time, lookback_windows_list, batch_size) -%}
+{%- macro get_intervals_list(interval_offset, time_unit_name, start_time, lookback_windows_list, lookforward_windows_list, batch_size) -%}
 {#
-    Calculates the list of intervals for each lookback window
+    Calculates the list of intervals for each lookback and lookforward window
     Arguments:
-        interval_offset(int):    The offset of the interval
-        time_unit_name(string):  The type of interval for result. Possible values: (hour, day)
-        start_time(datetime):    The start time
-        lookback_window(int):    The lookback window
-        batch_size(int):         The batch size
+        interval_offset(int):           The offset of the interval
+        time_unit_name(string):         The type of interval for result. Possible values: (hour, day)
+        start_time(datetime):           The start time
+        lookback_windows_list(list):    The list of lookback windows
+        lookforward_windows_list(list): The list of lookforward windows
+        batch_size(int):                The batch size
     Returns:
         Nested array of intervals with the following structure:
             [[[left_where_condition, right_where_condition], ...], left_having_condition, right_having_condition]
@@ -465,11 +470,13 @@
     {%- set interval_start = start_time + diu.get_unit_interval(value=interval_offset, unit=time_unit_name) -%}
     {%- set interval_end = interval_start + diu.get_unit_interval(value=batch_size, unit=time_unit_name) -%}
 
-    {%- for lookback_window in lookback_windows_list -%}
+    {%- for i in range(lookback_windows_list | length) -%}
+        {%- set lookback_window = lookback_windows_list[i] -%}
+        {%- set lookforward_window = lookforward_windows_list[i] -%}
     -- start date of each batch with lookback window
         {%- set left_where_condition = interval_start - diu.get_unit_interval(value=lookback_window, unit=time_unit_name) -%}
-    -- end date of each batch
-        {%- set right_where_condition = interval_end -%}
+    -- end date of each batch with lookforward window
+        {%- set right_where_condition = interval_end + diu.get_unit_interval(value=lookforward_window, unit=time_unit_name) -%}
 
         {%- do lookback_windows_intervals.append([left_where_condition, right_where_condition]) -%}
     {%- endfor -%}
