@@ -240,7 +240,7 @@
         {{- diu.insert_overwrite_partitions(target_relation, tmp_relation) -}}
 
     -- checking for duplicate parts and optimizing if needed
-        {%- do diu.check_and_optimize_duplicate_parts(target_relation, silence_mode) -%}
+        {%- do diu.check_duplicate_parts(target_relation, silence_mode) -%}
     {%- endif -%}
 -- dropping tmp table after replacing or exchanging
     {%- do drop_relation(tmp_relation) -%}
@@ -655,23 +655,23 @@
     {%- endcall -%}
 {%- endmacro -%}
 
-{%- macro optimize_partition(relation, partition_id) -%}
+{%- macro drop_part(relation, part_name) -%}
 {#
-    Optimizes specific partition and deduplicates data rows
+    Drops a specific part from a table
     Arguments:
-        relation(api.Relation):     The relation to optimize
-        partition_id(string):       The partition ID to optimize
+        relation(api.Relation):     The relation to drop the part from
+        part_name(string):          The name of the part to drop
     Returns:
         None
 #}
-    {%- call statement('optimize_partition') -%}
-        optimize table {{ relation }} partition id '{{ partition_id }}' final deduplicate settings mutations_sync=2
+    {%- call statement('drop_part') -%}
+        alter table {{ relation }} drop part '{{ part_name }}'
     {%- endcall -%}
 {%- endmacro -%}
 
-{%- macro check_and_optimize_duplicate_parts(relation, silence_mode) -%}
+{%- macro check_duplicate_parts(relation, silence_mode) -%}
 {#
-    Checks for duplicate parts in all partitions and optimizes if found
+    Checks for duplicate parts (same hash) and deletes them, keeping only one copy
     Arguments:
         relation(api.Relation):     The relation to check
         silence_mode(bool):         Should the log messages be silenced
@@ -682,7 +682,9 @@
 
     {%- set check_duplicates_query -%}
         select
-            partition_id
+            partition_id,
+            hash_of_all_files,
+            groupArray(name) as part_names
         from
             system.parts
         where
@@ -690,18 +692,27 @@
             and table = '{{ relation.identifier }}'
             and active = 1
         group by
-            partition_id, hash_of_all_files
+            partition_id,
+            hash_of_all_files
         having
             count() > 1
     {%- endset -%}
 
-    {%- set partitions_with_duplicates = run_query(check_duplicates_query).rows -%}
+    {%- set duplicate_groups = run_query(check_duplicates_query).rows -%}
 
-    {%- for partition_row in partitions_with_duplicates -%}
-        {%- set dup_partition_id = partition_row['partition_id'] -%}
+    {%- for dup_group in duplicate_groups -%}
+        {%- set dup_partition_id = dup_group['partition_id'] -%}
+        {%- set dup_hash = dup_group['hash_of_all_files'] -%}
+        {%- set part_names = dup_group['part_names'] -%}
+        {%- set parts_to_delete = part_names[1:] -%}
+
         {{- diu.log_colored(
-                'Detected duplicate parts in partition ' ~ dup_partition_id ~ ' - optimizing',
+                'Detected ' ~ (part_names | length) ~ ' duplicate parts in partition ' ~ dup_partition_id ~
+                ' with hash ' ~ dup_hash ~ ' - deleting ' ~ (parts_to_delete | length) ~ ' duplicates',
                 silence_mode, color='yellow') -}}
-        {%- do diu.optimize_partition(relation, dup_partition_id) -%}
+
+        {%- for part_name in parts_to_delete -%}
+            {%- do diu.drop_part(relation, part_name) -%}
+        {%- endfor -%}
     {%- endfor -%}
 {%- endmacro -%}
