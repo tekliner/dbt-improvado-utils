@@ -238,9 +238,12 @@
     -- replacing partitions
         {{- diu.log_colored('Replacing partitions from ' ~ tmp_relation ~ ' to ' ~ target_relation, silence_mode) -}}
         {{- diu.insert_overwrite_partitions(target_relation, tmp_relation) -}}
+
+    -- checking for duplicate parts and optimizing if needed
+        {%- do diu.check_and_optimize_duplicate_parts(target_relation, silence_mode) -%}
     {%- endif -%}
 -- dropping tmp table after replacing or exchanging
-    {%- do adapter.drop_relation(tmp_relation) -%}
+    {%- do drop_relation(tmp_relation) -%}
 
     {%- call noop_statement('main', 'Done') -%} {%- endcall -%}
     {%- do return ({'relations': sections_arr}) -%}
@@ -650,4 +653,55 @@
     {%- call statement('exchange_tables') -%}
         exchange tables {{ source_relation }} and {{ target_relation }}
     {%- endcall -%}
+{%- endmacro -%}
+
+{%- macro optimize_partition(relation, partition_id) -%}
+{#
+    Optimizes specific partition and removes duplicate parts
+    Arguments:
+        relation(api.Relation):     The relation to optimize
+        partition_id(string):       The partition ID to optimize
+    Returns:
+        None
+#}
+    {%- call statement('optimize_partition') -%}
+        optimize table {{ relation }} partition id '{{ partition_id }}' final settings mutations_sync=2
+    {%- endcall -%}
+{%- endmacro -%}
+
+{%- macro check_and_optimize_duplicate_parts(relation, silence_mode) -%}
+{#
+    Checks for duplicate parts in all partitions and optimizes if found
+    Arguments:
+        relation(api.Relation):     The relation to check
+        silence_mode(bool):         Should the log messages be silenced
+    Returns:
+        None
+#}
+    {%- set diu = dbt_improvado_utils -%}
+
+    {%- set check_duplicates_query -%}
+        select
+            partition_id
+        from
+            system.parts
+        where
+            database = '{{ relation.schema }}'
+            and table = '{{ relation.identifier }}'
+            and active = 1
+        group by
+            partition_id, hash_of_all_files
+        having
+            count() > 1
+    {%- endset -%}
+
+    {%- set partitions_with_duplicates = run_query(check_duplicates_query).rows -%}
+
+    {%- for partition_row in partitions_with_duplicates -%}
+        {%- set dup_partition_id = partition_row['partition_id'] -%}
+        {{- diu.log_colored(
+                'Detected duplicate parts in partition ' ~ dup_partition_id ~ ' - optimizing',
+                silence_mode, color='yellow') -}}
+        {%- do diu.optimize_partition(relation, dup_partition_id) -%}
+    {%- endfor -%}
 {%- endmacro -%}
