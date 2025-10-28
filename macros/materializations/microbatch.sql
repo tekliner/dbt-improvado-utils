@@ -657,7 +657,7 @@
 
 {%- macro optimize_partition(relation, partition_id) -%}
 {#
-    Optimizes specific partition and removes duplicate parts
+    Optimizes specific partition and deduplicates data rows
     Arguments:
         relation(api.Relation):     The relation to optimize
         partition_id(string):       The partition ID to optimize
@@ -665,7 +665,7 @@
         None
 #}
     {%- call statement('optimize_partition') -%}
-        optimize table {{ relation }} partition id '{{ partition_id }}' final settings mutations_sync=2
+        optimize table {{ relation }} partition id '{{ partition_id }}' final deduplicate settings mutations_sync=2
     {%- endcall -%}
 {%- endmacro -%}
 
