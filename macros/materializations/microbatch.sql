@@ -238,9 +238,12 @@
     -- replacing partitions
         {{- diu.log_colored('Replacing partitions from ' ~ tmp_relation ~ ' to ' ~ target_relation, silence_mode) -}}
         {{- diu.insert_overwrite_partitions(target_relation, tmp_relation) -}}
+
+    -- checking for duplicate parts and dropping if needed
+        {%- do diu.check_duplicate_parts(target_relation, silence_mode) -%}
     {%- endif -%}
 -- dropping tmp table after replacing or exchanging
-    {%- do adapter.drop_relation(tmp_relation) -%}
+    {%- do drop_relation(tmp_relation) -%}
 
     {%- call noop_statement('main', 'Done') -%} {%- endcall -%}
     {%- do return ({'relations': sections_arr}) -%}
@@ -650,4 +653,67 @@
     {%- call statement('exchange_tables') -%}
         exchange tables {{ source_relation }} and {{ target_relation }}
     {%- endcall -%}
+{%- endmacro -%}
+
+{%- macro drop_part(relation, part_name) -%}
+{#
+    Drops a specific part from a table
+    Arguments:
+        relation(api.Relation):     The relation to drop the part from
+        part_name(string):          The name of the part to drop
+    Returns:
+        None
+#}
+    {%- call statement('drop_part') -%}
+        alter table {{ relation }} drop part '{{ part_name }}'
+    {%- endcall -%}
+{%- endmacro -%}
+
+{%- macro check_duplicate_parts(relation, silence_mode) -%}
+{#
+    Checks for duplicate parts (same hash) and deletes them, keeping only one copy
+    Arguments:
+        relation(api.Relation):     The relation to check
+        silence_mode(bool):         Should the log messages be silenced
+    Returns:
+        None
+#}
+    {%- set diu = dbt_improvado_utils -%}
+
+    {%- set check_duplicates_query -%}
+        select
+            partition_id,
+            hash_of_all_files,
+            groupArray(name) as part_names
+        from
+            system.parts
+        where
+            database = '{{ relation.schema }}'
+            and table = '{{ relation.identifier }}'
+            and active = 1
+        group by
+            partition_id,
+            hash_of_all_files
+        having
+            count() > 1
+    {%- endset -%}
+
+    {%- set duplicate_groups = run_query(check_duplicates_query).rows -%}
+
+    {%- for dup_group in duplicate_groups -%}
+        {%- set dup_partition_id = dup_group['partition_id'] -%}
+        {%- set dup_hash = dup_group['hash_of_all_files'] -%}
+        {%- set part_names = dup_group['part_names'] -%}
+        {%- set parts_to_delete = part_names[1:] -%}
+
+        {{- diu.log_colored(
+                'Detected ' ~ (part_names | length) ~ ' duplicate parts in partition '~
+                dup_partition_id ~ ' with hash ' ~ dup_hash ~ ' - deleting duplicates',
+                silence_mode, color='red') -}}
+
+        {%- for part_name in parts_to_delete -%}
+            {%- do diu.drop_part(relation, part_name) -%}
+        {%- endfor -%}
+
+    {%- endfor -%}
 {%- endmacro -%}
