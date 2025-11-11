@@ -1,10 +1,10 @@
-{%- macro mcr_log_colored(message, silence_mode=false, color='yellow') -%}
+{%- macro mcr_log_colored(message, output_enabled=true, color='yellow') -%}
 {#
     Makes log message colored.
     Arguments:
-        message(string):    The log message to be colored
-        silence_mode(bool): Should silence mode be used
-        color(string):      The color of the log message
+        message(string):        The log message to be colored
+        output_enabled(bool):   Should the log message be printed
+        color(string):          The color of the log message
     Returns:
         The colored log message
 #}
@@ -18,5 +18,5 @@
         {%- set color_code = '33m' -%}
     {%- endif -%}
 
-    {{- log(this.identifier ~ ' log:' ~ color_code_start ~ color_code ~ message ~ '\033[00m', not silence_mode) -}}
+    {{- log(this.identifier ~ ' log:' ~ color_code_start ~ color_code ~ message ~ '\033[00m', output_enabled) -}}
 {%- endmacro -%}

@@ -42,14 +42,14 @@
 
 -- log settings
     {%- set debug_mode                          = config.get('debug_mode', default=false) -%}
-    {%- set silence_mode                        = config.get('silence_mode', default=false) -%}
+    {%- set silence_mode                        = not config.get('silence_mode', default=false) -%}
 
 -- logic ---------------------------------------------------------------------------------------------------------------
     {%- if not microbatch_settings -%}
         {%- do exceptions.raise_compiler_error(
                     diu.mcr_log_colored(
                         'No microbatch settings found\n' ~
-                        'Please add microbatch settings to the model input section', silence_mode, color='red')) -%}
+                        'Please add microbatch settings to the model input section', color='red')) -%}
     {%- endif -%}
 
 -- getting microbatch settings
@@ -104,7 +104,7 @@
                     diu.mcr_log_colored(
                         'Schema change detected. Materialization will be stopped\n' ~
                         'Please revise the schema changes or set "on_schema_change" to "full_refresh"\n' ~
-                        'If you want to force materialization - run with "full-refresh" flag', silence_mode, color='red')) -%}
+                        'If you want to force materialization - run with "full-refresh" flag', color='red')) -%}
 
         {%- elif on_schema_change == 'full_refresh' -%}
             {%- set full_refresh = true -%}
