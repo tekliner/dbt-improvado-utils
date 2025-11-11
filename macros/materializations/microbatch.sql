@@ -42,12 +42,12 @@
 
 -- log settings
     {%- set debug_mode                          = config.get('debug_mode', default=false) -%}
-    {%- set silence_mode                        = config.get('silence_mode', default=true) -%}
+    {%- set silence_mode                        = config.get('silence_mode', default=false) -%}
 
 -- logic ---------------------------------------------------------------------------------------------------------------
     {%- if not microbatch_settings -%}
         {%- do exceptions.raise_compiler_error(
-                    diu.log_colored(
+                    diu.mcr_log_colored(
                         'No microbatch settings found\n' ~
                         'Please add microbatch settings to the model input section', silence_mode, color='red')) -%}
     {%- endif -%}
@@ -61,7 +61,7 @@
         {%- do input_lookforward_windows_list.append((setting[2] | int) if setting[2] else 0) -%}
     {%- endfor -%}
 
-    {{- diu.log_colored(
+    {{- diu.mcr_log_colored(
             'Input models:\n\t' ~ input_models_list | join('\n\t') ~
             '\nFinal is set for:\n\t' ~
                 zip(input_models_list, final_settings_list) | selectattr(1) | map(attribute=0) | join('\n\t')  ~
@@ -75,13 +75,13 @@
     {%- set sql = re.sub('`(.+)`\.`(.+)`\s+final', '`\\1`.`\\2`', sql, flags=re.IGNORECASE) -%}
 
     {%- if target_schema == production_schema -%}
-        {{- diu.log_colored('Starting to build to production schema: ' ~ target_schema, silence_mode) -}}
+        {{- diu.mcr_log_colored('Starting to build to production schema: ' ~ target_schema, silence_mode) -}}
 
     {%- else -%}
         {%- set materialization_start_date =
                     dt.datetime.combine(dt.datetime.today() - dt.timedelta(days=dev_days_offset), dt.time.min) -%}
 
-        {{- diu.log_colored(
+        {{- diu.mcr_log_colored(
                 'Starting to build to dev schema:\n\t' ~ target_schema ~
                 '\nDev schema materialization start date:\n\t' ~ materialization_start_date ~
                 '\nOriginal materialization start date:\n\t' ~ config.get('materialization_start_date'), silence_mode) -}}
@@ -101,14 +101,14 @@
     {%- if is_schema_changed -%}
         {%- if on_schema_change == 'fail' and not full_refresh -%}
             {%- do exceptions.raise_compiler_error(
-                    diu.log_colored(
+                    diu.mcr_log_colored(
                         'Schema change detected. Materialization will be stopped\n' ~
                         'Please revise the schema changes or set "on_schema_change" to "full_refresh"\n' ~
                         'If you want to force materialization - run with "full-refresh" flag', silence_mode, color='red')) -%}
 
         {%- elif on_schema_change == 'full_refresh' -%}
             {%- set full_refresh = true -%}
-            {{- diu.log_colored(
+            {{- diu.mcr_log_colored(
                     'Full refresh will be done since "on_schema_change" is set to "full_refresh"', silence_mode, color='red') -}}
 
         {%- endif -%}
@@ -138,14 +138,14 @@
 
         {%- set start_time = last_record_datetime - diu.get_unit_interval(value=overwrite_size, unit=time_unit_name) -%}
 
-        {{- diu.log_colored(
+        {{- diu.mcr_log_colored(
                 'Target relation exists' ~
                 '\nLast record datetime:\n\t' ~ last_record_datetime ~
                 '\nLast record datetime with overwrite size:\n\t' ~ start_time, debug_mode) -}}
 
     {%- else -%}
         {%- set start_time = materialization_start_date -%}
-        {{- diu.log_colored(
+        {{- diu.mcr_log_colored(
                 'Target relation doesn\'t exist' ~
                 '\nDefault datetime:\n\t' ~ start_time, debug_mode) -}}
 
@@ -158,9 +158,9 @@
                     enddate=fixed_now,
                     unit=time_unit_name) -%}
 
-    {{- diu.log_colored('Calculating interval parts', silence_mode) -}}
+    {{- diu.mcr_log_colored('Calculating interval parts', silence_mode) -}}
     {%- set parts_count = [(interval_range / batch_size) | round(0, 'ceil') | int, 2] | max -%}
-    {{- diu.log_colored('Interval parts count:\n\t' ~ parts_count, silence_mode) -}}
+    {{- diu.mcr_log_colored('Interval parts count:\n\t' ~ parts_count, silence_mode) -}}
 
 -- temporary table creation
     {%- set tmp_relation_exists, tmp_relation =
@@ -176,7 +176,7 @@
     {%- set partition_id = diu.get_partition_id(start_time, partition_by_format) -%}
 
     {%- if not full_refresh -%}
-        {{- diu.log_colored(
+        {{- diu.mcr_log_colored(
                 'Copying partition "' ~ partition_id ~ '" from ' ~ target_relation ~ ' to ' ~ tmp_relation, silence_mode) -}}
         {%- do diu.copy_partition(target_relation, tmp_relation, partition_id) -%}
 
@@ -213,14 +213,14 @@
 
         {%- if execute -%}
             {%- if loop.first -%}
-                {{- diu.log_colored('Inserting into: ' ~ tmp_relation, silence_mode) -}}
+                {{- diu.mcr_log_colored('Inserting into: ' ~ tmp_relation, silence_mode) -}}
             {%- endif -%}
 
-        {{- diu.log_colored(
+        {{- diu.mcr_log_colored(
             'Inserting batch: ' ~ (i + 1) ~ ' out of ' ~ parts_count ~
             '\nDate range: from ' ~  having_conditions[0] ~ ' to ' ~  having_conditions[1], silence_mode) -}}
 
-        {{- diu.log_colored(insert_query[250:1100] ~ '\n\n...\n\n' ~ insert_query[-200:], debug_mode) -}}
+        {{- diu.mcr_log_colored(insert_query[250:1100] ~ '\n\n...\n\n' ~ insert_query[-200:], debug_mode) -}}
 
         -- insert query execution
             {%- call statement('inserting_new_data_to_temporary_table') -%}
@@ -232,11 +232,11 @@
 
     {%- if full_refresh -%}
     -- exchanging tmp table and target table
-        {{- diu.log_colored('Exchanging ' ~ tmp_relation ~ ' with ' ~ target_relation, silence_mode) -}}
+        {{- diu.mcr_log_colored('Exchanging ' ~ tmp_relation ~ ' with ' ~ target_relation, silence_mode) -}}
         {{- diu.exchange_tables(tmp_relation, target_relation) -}}
     {%- else -%}
     -- replacing partitions
-        {{- diu.log_colored('Replacing partitions from ' ~ tmp_relation ~ ' to ' ~ target_relation, silence_mode) -}}
+        {{- diu.mcr_log_colored('Replacing partitions from ' ~ tmp_relation ~ ' to ' ~ target_relation, silence_mode) -}}
         {{- diu.insert_overwrite_partitions(target_relation, tmp_relation) -}}
 
     -- checking for duplicate parts and dropping if needed
@@ -248,30 +248,6 @@
     {%- call noop_statement('main', 'Done') -%} {%- endcall -%}
     {%- do return ({'relations': sections_arr}) -%}
 {%- endmaterialization -%}
-
-
-{%- macro log_colored(message, silence_mode=false, color='yellow') -%}
-{#
-    Makes log message colored.
-    Arguments:
-        message(string):    The log message to be colored
-        silence_mode(bool): Should the log message be printed
-        color(string):      The color of the log message
-    Returns:
-        The colored log message
-#}
-    {%- set color_code_start = '\n\033[0;' -%}
-
-    {%- if color == 'green' -%}
-        {%- set color_code = '32m' -%}
-    {%- elif color == 'red' -%}
-        {%- set color_code = '31m' -%}
-    {%- elif color == 'yellow' -%}
-        {%- set color_code = '33m' -%}
-    {%- endif -%}
-
-    {{- log(this.identifier ~ ' log:' ~ color_code_start ~ color_code ~ message ~ '\033[00m', silence_mode) -}}
-{%- endmacro -%}
 
 
 {%- macro check_schema_changes(database, schema, identifier, type, sql, debug_mode, silence_mode) -%}
@@ -298,7 +274,7 @@
             adapter.get_relation(database=database, schema=schema, identifier=identifier) -%}
 
     {%- if relation and execute -%}
-        {{- diu.log_colored('Checking existing table columns names and types consistency', debug_mode) -}}
+        {{- diu.mcr_log_colored('Checking existing table columns names and types consistency', debug_mode) -}}
 
         {%- set check_relation_exists, check_relation =
                     diu.get_or_create_dataset(
@@ -320,11 +296,11 @@
     -- columns number comparison
         {%- if (columns_old | length) != (columns_new | length) -%}
             {%- set is_schema_changed.value = true -%}
-            {{- diu.log_colored(
+            {{- diu.mcr_log_colored(
                     'Number of columns doesn\'t match', silence_mode, color='red') -}}
 
         {%- else -%}
-            {{- diu.log_colored(
+            {{- diu.mcr_log_colored(
                     'Number of columns match\nChecking for name and type consistency', silence_mode) -}}
 
             {%- for i in range(columns_new | length) -%}
@@ -333,7 +309,7 @@
 
                 {%- if column_old.data_type != column_new.data_type or column_old.name != column_new.name -%}
                     {%- set is_schema_changed.value = true -%}
-                    {{- diu.log_colored(
+                    {{- diu.mcr_log_colored(
                             'Column name/type mismatch:' ~
                             '\n\told: ' ~ column_old.name ~ ' ' ~ column_old.data_type ~
                             '\n\tnew: ' ~ column_new.name ~ ' ' ~ column_new.data_type, silence_mode, color='red') -}}
@@ -341,7 +317,7 @@
             {%- endfor -%}
         {%- endif -%}
 
-        {{- diu.log_colored(
+        {{- diu.mcr_log_colored(
                 'Checking for name and type consistency is done',
                 silence_mode,
                 color='red' if is_schema_changed.value else 'green') -}}
@@ -370,7 +346,7 @@
 #}
     {%- set diu = dbt_improvado_utils -%}
 
-    {{- diu.log_colored('Checking if relation exists:\n\t' ~ identifier, debug_mode) -}}
+    {{- diu.mcr_log_colored('Checking if relation exists:\n\t' ~ identifier, debug_mode) -}}
 
     {%- set relation_exists, relation =
                 get_or_create_relation(
@@ -381,7 +357,7 @@
 
 -- creating relation if it doesn't exist
     {%- if not relation_exists and execute -%}
-        {{- diu.log_colored(
+        {{- diu.mcr_log_colored(
                 'Creating non-existing relation:\n\t' ~ identifier, debug_mode) -}}
 
         {%- if type == 'table' -%}
@@ -390,7 +366,7 @@
             {%- do create_view_as(relation, sql) -%}
         {%- endif -%}
 
-        {{- diu.log_colored(
+        {{- diu.mcr_log_colored(
                 'Relation has been created:\n\t' ~ identifier, debug_mode) -}}
     {%- endif -%}
 
@@ -706,7 +682,7 @@
         {%- set part_names = dup_group['part_names'] -%}
         {%- set parts_to_delete = part_names[1:] -%}
 
-        {{- diu.log_colored(
+        {{- diu.mcr_log_colored(
                 'Detected ' ~ (part_names | length) ~ ' duplicate parts in partition '~
                 dup_partition_id ~ ' with hash ' ~ dup_hash ~ ' - deleting duplicates',
                 silence_mode, color='red') -}}
