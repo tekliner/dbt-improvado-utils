@@ -1,6 +1,6 @@
 {%- materialization custom_dictionary -%}
-    {# 
-        Steamlines a dictionary creating process by reducing the amount of boilerplate code.
+    {#
+        Streamlines a dictionary creating process by reducing the amount of boilerplate code.
         Creates a dictionary with a "direct" layout for "dev" or "staging" schemas; otherwise, keeps the settings unchanged.
         This materialization requires "--depends_on:{{ ref('<source_table_name>') }}" clause for the "clickhouse" source.
         Arguments:
@@ -36,7 +36,11 @@
             target_relation             = get_or_create_relation(none, target.schema, this.identifier, none) -%}
     {%- set backup_relation             = make_backup_relation(target_relation, none, suffix='__dbt_backup') -%}
 
+    -- log settings
+    {%- set silence_mode                = config.get('silence_mode', default=false) -%}
+
     -- materialization settings
+    {%- set use_yaml_types              = config.get('use_yaml_types', default=false) -%}
     {%- set source                      = config.get('source', default='clickhouse') -%}
     {%- set primary_key_config          = config.require('primary_key') -%}
     {%- set columns_to_include          = config.get('columns_to_include', default='*') -%}
@@ -77,12 +81,27 @@
         {%- do exceptions.raise_compiler_error('Invalid source settings') -%}
     {%- endif -%}
 
+    -- source columns redefinition
+    {%- set source_columns_override = namespace(value=[]) -%}
+
+    {%- if use_yaml_types -%}
+        {%- for model in graph.nodes.values() -%}
+            {%- if model.name == this.name -%}
+                -- unpacking the "columns" dictionary to fit the "source_columns" structure
+                {%- for column in model.columns.values() -%}
+                    {%- do source_columns_override.value.append(column) -%}
+                {%- endfor -%}
+            {%- endif -%}
+        {%- endfor -%}
+    {%- endif -%}
+
+    {%- set source_columns = source_columns_override.value -%}
 
 -- logic ---------------------------------------------------------------------------------------------------------------
     -- in order to use "loop.last" and set a comma on the last line correctly "source_columns" is filtered
     {%- set filtered_columns = namespace(value=[]) -%}
 
-    {{- log('Filtering columns', info=true) -}}
+    {{- diu.mcr_log_colored('Filtering columns', silence_mode) -}}
     {%- if columns_to_include == '*' and columns_to_exclude -%}
         {%- for column in source_columns -%}
             {%- if column.name not in columns_to_exclude -%}
@@ -108,7 +127,7 @@
     -- generating the dictionary ddl
     {%- set dictionary_ddl = namespace(value=sql) -%}
 
-    {{- log('Generating the dictionary DDL', info=true) -}}
+    {{- diu.mcr_log_colored('Generating the dictionary DDL', silence_mode) -}}
     {%- for column in source_columns -%}
         {%- if loop.first -%}
             {%- set dictionary_ddl.value = dictionary_ddl.value ~ create_clause ~ backup_relation ~ '\n(' -%}
@@ -136,18 +155,19 @@
         {%- set sql = sql ~ '\n' ~ layout_pattern.format(dev_schema_layout) -%}
     {%- endif -%}
 
-    {{- log('Executing generated SQL:\n' ~ sql, info=true) -}}
+    {{- diu.mcr_log_colored('Executing generated SQL:\n' ~ sql, silence_mode) -}}
     {%- do run_query(sql) -%}
 
-    {{- log('Checking if the dictionary is queryable', info=true) -}}
+    {{- diu.mcr_log_colored('Checking if the dictionary is queryable', silence_mode) -}}
     {%- set query_result = run_query('select 1 from ' ~ backup_relation ~ ' limit 1') -%}
 
     {%- if query_result is none -%}
-        {%- do exceptions.raise_compiler_error('Dictionary is not queryable. Aborting') -%}
+        {%- do exceptions.raise_compiler_error(
+                diu.mcr_log_colored('Dictionary is not queryable. Aborting', silence_mode, 'red')) -%}
     {%- endif -%}
 
-    {{- log('Dictionary is queryable', info=true) -}}
-    {{- log('Replacing the backup relation with the target relation', info=true) -}}
+    {{- diu.mcr_log_colored('Dictionary is queryable', silence_mode, 'green') -}}
+    {{- diu.mcr_log_colored('Replacing the backup relation with the target relation', silence_mode) -}}
 
     -- if the target relation exists, exchange the tables; rename otherwise
     {%- if target_relation_exists -%}
@@ -157,7 +177,7 @@
         {%- do adapter.rename_relation(backup_relation, target_relation) -%}
     {%- endif -%}
 
-    {{- log('Dictionary ' ~ target_relation ~ ' is ready', info=true) -}}
+    {{- diu.mcr_log_colored('Dictionary ' ~ target_relation ~ ' is ready', silence_mode) -}}
 
     -- dropping the backup relation
     {%- do diu.mcr_drop_relation_if_exists(backup_relation) -%}
