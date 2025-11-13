@@ -37,7 +37,7 @@
     {%- set backup_relation             = make_backup_relation(target_relation, none, suffix='__dbt_backup') -%}
 
     -- log settings
-    {%- set silence_mode                = config.get('silence_mode', default=false) -%}
+    {%- set silence_mode                = not config.get('silence_mode', default=false) -%}
 
     -- materialization settings
     {%- set use_yaml_types              = config.get('use_yaml_types', default=false) -%}
@@ -93,9 +93,8 @@
                 {%- endfor -%}
             {%- endif -%}
         {%- endfor -%}
+        {%- set source_columns = source_columns_override.value -%}
     {%- endif -%}
-
-    {%- set source_columns = source_columns_override.value -%}
 
 -- logic ---------------------------------------------------------------------------------------------------------------
     -- in order to use "loop.last" and set a comma on the last line correctly "source_columns" is filtered
