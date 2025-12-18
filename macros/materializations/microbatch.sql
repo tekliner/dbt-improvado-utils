@@ -235,11 +235,14 @@
         {{- diu.mcr_log_colored('Exchanging ' ~ tmp_relation ~ ' with ' ~ target_relation, silence_mode) -}}
         {{- diu.exchange_tables(tmp_relation, target_relation) -}}
     {%- else -%}
+    -- checking tmp table for duplicate parts before replacing and dropping if needed
+        {%- do diu.check_duplicate_parts(tmp_relation, silence_mode) -%}
+
     -- replacing partitions
         {{- diu.mcr_log_colored('Replacing partitions from ' ~ tmp_relation ~ ' to ' ~ target_relation, silence_mode) -}}
         {{- diu.insert_overwrite_partitions(target_relation, tmp_relation) -}}
 
-    -- checking for duplicate parts and dropping if needed
+    -- checking target table for duplicate parts after replacing and dropping if needed
         {%- do diu.check_duplicate_parts(target_relation, silence_mode) -%}
     {%- endif -%}
 -- dropping tmp table after replacing or exchanging
@@ -679,8 +682,8 @@
     {%- for dup_group in duplicate_groups -%}
         {%- set dup_partition_id = dup_group['partition_id'] -%}
         {%- set dup_hash = dup_group['hash_of_all_files'] -%}
-        {%- set part_names = dup_group['part_names'] -%}
-        {%- set parts_to_delete = fromjson(part_names)[1:] -%}
+        {%- set part_names = fromjson(dup_group['part_names']) -%}
+        {%- set parts_to_delete = part_names[1:] -%}
 
         {{- diu.mcr_log_colored(
                 'Detected ' ~ (part_names | length) ~ ' duplicate parts in partition '~
