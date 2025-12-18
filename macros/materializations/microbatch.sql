@@ -180,6 +180,9 @@
                 'Copying partition "' ~ partition_id ~ '" from ' ~ target_relation ~ ' to ' ~ tmp_relation, silence_mode) -}}
         {%- do diu.copy_partition(target_relation, tmp_relation, partition_id) -%}
 
+    -- checking for duplicate parts and dropping if needed
+        {%- do diu.check_duplicate_parts(tmp_relation, silence_mode) -%}
+
     -- deleting data to be overwritten from tmp relation
         {%- do run_query(
             "delete from " ~ tmp_relation ~ " where " ~ output_datetime_column ~ " >= " ~ "toDateTime('" ~ start_time ~ "')") -%}
