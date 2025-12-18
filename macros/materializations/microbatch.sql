@@ -180,9 +180,6 @@
                 'Copying partition "' ~ partition_id ~ '" from ' ~ target_relation ~ ' to ' ~ tmp_relation, silence_mode) -}}
         {%- do diu.copy_partition(target_relation, tmp_relation, partition_id) -%}
 
-    -- checking for duplicate parts and dropping if needed
-        {%- do diu.check_duplicate_parts(tmp_relation, silence_mode) -%}
-
     -- deleting data to be overwritten from tmp relation
         {%- do run_query(
             "delete from " ~ tmp_relation ~ " where " ~ output_datetime_column ~ " >= " ~ "toDateTime('" ~ start_time ~ "')") -%}
@@ -238,11 +235,14 @@
         {{- diu.mcr_log_colored('Exchanging ' ~ tmp_relation ~ ' with ' ~ target_relation, silence_mode) -}}
         {{- diu.exchange_tables(tmp_relation, target_relation) -}}
     {%- else -%}
+    -- checking tmp table for duplicate parts before replacing and dropping if needed
+        {%- do diu.check_duplicate_parts(tmp_relation, silence_mode) -%}
+
     -- replacing partitions
         {{- diu.mcr_log_colored('Replacing partitions from ' ~ tmp_relation ~ ' to ' ~ target_relation, silence_mode) -}}
         {{- diu.insert_overwrite_partitions(target_relation, tmp_relation) -}}
 
-    -- checking for duplicate parts and dropping if needed
+    -- checking target table for duplicate parts after replacing and dropping if needed
         {%- do diu.check_duplicate_parts(target_relation, silence_mode) -%}
     {%- endif -%}
 -- dropping tmp table after replacing or exchanging
