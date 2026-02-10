@@ -7,9 +7,11 @@
 
 
 {% materialization custom_materialized_view, adapter='clickhouse' -%}
-    -- set 'mv_allowed_env' to 'all' on model config to allow development materialized views
+    -- set 'mv_allowed_env' on model config to:
+    --  'prod' - allow only production materialized views (default)
+    --  'all' - allow development, staging and production materialized views
+    --  'none' - disallow materialized views in any environment
     {% set mv_allowed_env = config.get('mv_allowed_env', default='prod') %}
-    {% set mv_allowed = False %}
     {% set is_prod_schema = dbt_improvado_utils.mcr_is_prod_schema() %}
     {% set target_table_exists, target_table = get_or_create_relation(database=this.database, schema=this.schema, identifier=this.identifier, type='table') -%}
     {% set existing_target_table = load_cached_relation(target_table) %}
@@ -30,7 +32,9 @@
     {% do dbt_improvado_utils.create_temporary_empty_table(tmp_relation, sql) %}
     {{ to_drop.append(tmp_relation) }}
 
-    {% if is_prod_schema and mv_allowed_env == 'prod' or mv_allowed_env == 'all' %}
+    {% if mv_allowed_env == 'none' %}
+        {% set mv_allowed = False %}
+    {% elif is_prod_schema and mv_allowed_env == 'prod' or mv_allowed_env == 'all' %}
         {% set mv_allowed = True %}
     {% endif %}
 
@@ -88,7 +92,7 @@
         {% do adapter.commit() %}
 
     {% else %}
-        -- for dry run 
+        -- for dry run
         {{ store_result('main', 'SKIP') }}
     {% endif %}
 
