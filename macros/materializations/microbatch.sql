@@ -182,7 +182,8 @@
 
     -- deleting data to be overwritten from tmp relation
         {%- do run_query(
-            "delete from " ~ tmp_relation ~ " where " ~ output_datetime_column ~ " >= " ~ "toDateTime('" ~ start_time ~ "')") -%}
+            "alter table " ~ tmp_relation ~ " delete where " ~ output_datetime_column ~ " >= " ~ "toDateTime('" ~ start_time ~ "')"
+            ~ " settings mutations_sync = 1") -%}
 
     {%- endif -%}
 
