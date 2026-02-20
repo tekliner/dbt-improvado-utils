@@ -30,6 +30,9 @@
 -- datetime settings
     {%- set materialization_start_date          = dt.datetime.strptime(
                                                     config.require('materialization_start_date'), '%Y-%m-%d') -%}
+    {%- set _materialization_end_date_str       = config.get('materialization_end_date') -%}
+    {%- set materialization_end_date            = dt.datetime.strptime(_materialization_end_date_str, '%Y-%m-%d')
+                                                    if _materialization_end_date_str else none -%}
     {%- set time_unit_name                      = config.require('time_unit_name') -%}
     {%- set batch_size                          = config.require('batch_size') -%}
     {%- set overwrite_size                      = config.get('overwrite_size', default=0) -%}
@@ -155,7 +158,7 @@
     {%- set interval_range =
                 diu.get_unit_datediff(
                     startdate=start_time,
-                    enddate=fixed_now,
+                    enddate=materialization_end_date or fixed_now,
                     unit=time_unit_name) -%}
 
     {{- diu.mcr_log_colored('Calculating interval parts', silence_mode) -}}
@@ -181,6 +184,7 @@
         {%- do diu.copy_partition(target_relation, tmp_relation, partition_id) -%}
 
     -- deleting data to be overwritten from tmp relation
+        {%- do diu.wait_for_merges(tmp_relation) -%}
         {%- do run_query(
             "alter table " ~ tmp_relation ~ " delete where " ~ output_datetime_column ~ " >= " ~ "toDateTime('" ~ start_time ~ "')"
             ~ " settings mutations_sync = 1") -%}
@@ -559,6 +563,7 @@
     Returns:
         None
 #}
+    {%- set diu = dbt_improvado_utils -%}
     {%- if execute -%}
         {%- set select_changed_partitions -%}
             select
@@ -576,6 +581,7 @@
     {%- endif -%}
 
     {%- if changed_partitions -%}
+        {%- do diu.wait_for_merges(existing_relation) -%}
         {%- for partition in changed_partitions -%}
             {%- call statement('replace_partitions') -%}
                 alter table {{ existing_relation }}
@@ -649,6 +655,34 @@
     {%- endcall -%}
 {%- endmacro -%}
 
+{%- macro wait_for_merges(relation, max_retries=30, sleep_seconds=3) -%}
+{#
+    Polls system.merges until no active merges are running on the table,
+    preventing PART_IS_TEMPORARILY_LOCKED errors on partition operations.
+    Does not require SYSTEM STOP MERGES permissions.
+    Arguments:
+        relation(api.Relation):     The relation to wait on
+        max_retries(int):           Maximum number of polling attempts (default 30)
+        sleep_seconds(int):         Seconds to wait between polls (default 2)
+    Returns:
+        None
+#}
+    {%- set check_merges_query -%}
+        select count()
+        from system.merges
+        where database = '{{ relation.schema }}'
+          and table = '{{ relation.identifier }}'
+    {%- endset -%}
+
+    {%- for i in range(max_retries) -%}
+        {%- set merge_count = run_query(check_merges_query)[0][0] -%}
+        {%- if merge_count == 0 -%}
+            {%- break -%}
+        {%- endif -%}
+        {%- do run_query('select sleep(' ~ sleep_seconds ~ ')') -%}
+    {%- endfor -%}
+{%- endmacro -%}
+
 {%- macro check_duplicate_parts(relation, silence_mode) -%}
 {#
     Checks for duplicate parts (same hash) and deletes them, keeping only one copy
@@ -680,6 +714,11 @@
 
     {%- set duplicate_groups = run_query(check_duplicates_query).rows -%}
 
+    {%- if duplicate_groups -%}
+        {%- do diu.wait_for_merges(relation) -%}
+        {%- set duplicate_groups = run_query(check_duplicates_query).rows -%}
+    {%- endif -%}
+
     {%- for dup_group in duplicate_groups -%}
         {%- set dup_partition_id = dup_group['partition_id'] -%}
         {%- set dup_hash = dup_group['hash_of_all_files'] -%}
@@ -696,4 +735,5 @@
         {%- endfor -%}
 
     {%- endfor -%}
+
 {%- endmacro -%}
