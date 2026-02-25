@@ -19,7 +19,7 @@ jobs:
   run_tests:
     name: 🛠️Running tests
     timeout-minutes: 10
-    runs-on: ubuntu-latest
+    runs-on: runners-set-amd64-medium
     steps:
       - name: Checkout
         uses: actions/checkout@v4
