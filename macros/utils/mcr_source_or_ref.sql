@@ -22,7 +22,7 @@
             {# parent model may be on internal_analytics_dbt_staging_* when child is on improvado_models_staging #}
             {%- set different_schema_parent_query -%}
                 select
-                    concatWithSeparator('.', database, name)
+                    format('`{}`.`{}`', database, name)
                 from
                     system.tables
                 where
