@@ -12,7 +12,7 @@
     -- if contract is enforced in yaml file
     {%- set is_contract_enforced                = config.get('contract').enforced -%}
     -- possible values: fail, full_refresh
-    {%- set on_schema_change                    = config.get('on_schema_change', default='fail') -%}
+    {%- set on_schema_change_action             = config.get('on_schema_change_action', default='fail') -%}
 
 -- microbatch settings
     {%- set microbatch_settings_pattern         = '\s*--\s*microbatch:\s*(\w+),\s*(\d+)(?:,\s*(\d+))?\s*.*`.+`\.`(.+)`\s+(final)?' -%}
@@ -100,19 +100,21 @@
                     sql=diu.get_table_structure(sql, is_contract_enforced),
                     debug_mode=debug_mode,
                     silence_mode=silence_mode) -%}
-
+    {{print(is_schema_changed)}}
+    {{print(on_schema_change_action)}}
+    {{print(full_refresh)}}
     {%- if is_schema_changed -%}
-        {%- if on_schema_change == 'fail' and not full_refresh -%}
+        {%- if on_schema_change_action == 'fail' and not full_refresh -%}
             {%- do exceptions.raise_compiler_error(
                     diu.mcr_log_colored(
                         'Schema change detected. Materialization will be stopped\n' ~
-                        'Please revise the schema changes or set "on_schema_change" to "full_refresh"\n' ~
+                        'Please revise the schema changes or set "on_schema_change_action" to "full_refresh"\n' ~
                         'If you want to force materialization - run with "full-refresh" flag', color='red')) -%}
 
-        {%- elif on_schema_change == 'full_refresh' -%}
+        {%- elif on_schema_change_action == 'full_refresh' -%}
             {%- set full_refresh = true -%}
             {{- diu.mcr_log_colored(
-                    'Full refresh will be done since "on_schema_change" is set to "full_refresh"', silence_mode, color='red') -}}
+                    'Full refresh will be done since "on_schema_change_action" is set to "full_refresh"', silence_mode, color='red') -}}
 
         {%- endif -%}
     {%- endif -%}
