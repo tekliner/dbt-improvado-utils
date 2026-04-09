@@ -100,9 +100,7 @@
                     sql=diu.get_table_structure(sql, is_contract_enforced),
                     debug_mode=debug_mode,
                     silence_mode=silence_mode) -%}
-    {{print(is_schema_changed)}}
-    {{print(on_schema_change_action)}}
-    {{print(full_refresh)}}
+
     {%- if is_schema_changed -%}
         {%- if on_schema_change_action == 'fail' and not full_refresh -%}
             {%- do exceptions.raise_compiler_error(
