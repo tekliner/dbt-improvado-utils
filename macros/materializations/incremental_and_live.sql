@@ -42,7 +42,7 @@
             {% set input_model = input_models_set[index] %}
             {% set input_column = input_columns_set[index] %}
             {% set input_relation = schema ~ '.' ~ input_model %}
-            {% set sql_replacement = "(select * from " ~ input_relation ~ " where " ~ input_column ~ " between '" ~ left_where ~ "' and '" ~ right_where ~ "')" %}
+            {% set sql_replacement = "(select * from " ~ input_relation ~ " where " ~ input_column ~ " between toDate('" ~ left_where ~ "') and toDate('" ~ right_where ~ "'))" %}
             
            
             {% set model_sql.query = (model_sql.query | replace(input_relation, sql_replacement)) %}
@@ -133,7 +133,7 @@
             {% set input_model = input_models_set[index] %}
             {% set input_column = input_columns_set[index] %}
             {% set input_relation = schema ~ '.' ~ input_model %}
-            {% set sql_replacement = "(select * from " ~ input_relation ~ " where " ~ input_column ~ " between '" ~ left_where ~ "' and '" ~ right_where ~ "')" %}
+            {% set sql_replacement = "(select * from " ~ input_relation ~ " where " ~ input_column ~ " between toDate('" ~ left_where ~ "') and toDate('" ~ right_where ~ "'))" %}
             
            
             {% set model_sql.query = (model_sql.query | replace(input_relation, sql_replacement)) %}
@@ -224,7 +224,7 @@
             {% set input_model = input_models_set[index] %}
             {% set input_column = input_columns_set[index] %}
             {% set input_relation = schema ~ '.' ~ input_model %}
-            {% set sql_replacement = "(select * from " ~ input_relation ~ " where " ~ input_column ~ " between '" ~ left_where ~ "' and '" ~ right_where ~ "')" %}
+            {% set sql_replacement = "(select * from " ~ input_relation ~ " where " ~ input_column ~ " between toDate('" ~ left_where ~ "') and toDate('" ~ right_where ~ "'))" %}
             
            
             {% set model_sql.query = (model_sql.query | replace(input_relation, sql_replacement)) %}
