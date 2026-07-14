@@ -10,12 +10,19 @@
         1. Checks if the parent exists in the same schema → ref().
         2. Else falls back to source().
 
+    Existence checks probe the parent's database object name. For models with an `alias` config
+    (e.g. alias = '_' ~ this.identifier) pass it via `identifier` — otherwise the probes miss the
+    object, the ref() branch is unreachable and the macro always falls back to source(). BI-9961.
+
     Args:
         src_yml    (str): source name as defined in sources.yml (used for source() fallback)
         table_name (str): model/table name to resolve
+        identifier (str, optional): parent's database object name when it differs from table_name
+                                    (the model's `alias`)
 #}
-{%- macro mcr_source_or_ref(src_yml, table_name) -%}
-    {%- set is_same_schema_parent_exists = adapter.get_relation(database=none, schema=target.schema, identifier=table_name) -%}
+{%- macro mcr_source_or_ref(src_yml, table_name, identifier=none) -%}
+    {%- set parent_identifier = identifier if identifier else table_name -%}
+    {%- set is_same_schema_parent_exists = adapter.get_relation(database=none, schema=target.schema, identifier=parent_identifier) -%}
 
     {%- if not dbt_improvado_utils.mcr_is_prod_schema() -%}
         {%- if target.schema == 'improvado_models_staging' -%}
@@ -27,7 +34,7 @@
                     system.tables
                 where
                     database like 'internal_analytics_dbt_staging_%'
-                    and name = '{{ table_name }}'
+                    and name = '{{ parent_identifier }}'
             {%- endset -%}
 
             {%- set _result = run_query(different_schema_parent_query) -%}
