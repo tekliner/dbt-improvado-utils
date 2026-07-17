@@ -39,6 +39,23 @@
     {%- set dev_days_offset                     = config.get('dev_days_offset', default=0) -%}
     {%- set fixed_now                           = dt.datetime.now().replace(microsecond=0) -%}
 
+-- anchor mode: how start_time is anchored on each run
+    -- high_water_mark (default): anchor to MAX(output_datetime_column) already in the target relation.
+    --     Guarantees catch-up after an outage (a paused job resumes exactly where it left off and
+    --     works forward through the backlog), but a straggler row that becomes visible to this model
+    --     later than overwrite_size after its own timestamp can be permanently skipped once the
+    --     target's high-water mark (driven by other, on-time rows) has advanced past it.
+    -- wall_clock: anchor to fixed_now instead. Closes the straggler-loss gap above (window always
+    --     trails "now" by overwrite_size regardless of what other rows are doing), but loses the
+    --     outage catch-up guarantee: any backlog older than overwrite_size at the time the job
+    --     resumes after a pause is permanently skipped. Opt in per-model, not by default.
+    {%- set anchor_mode                         = config.get('anchor_mode', default='high_water_mark') -%}
+    {%- if anchor_mode not in ['high_water_mark', 'wall_clock'] -%}
+        {%- do exceptions.raise_compiler_error(
+                    diu.mcr_log_colored(
+                        'Invalid anchor_mode "' ~ anchor_mode ~ '". Must be one of: high_water_mark, wall_clock', color='red')) -%}
+    {%- endif -%}
+
 -- other settings
     {%- set partition_by                        = config.require('partition_by') -%}
     {%- set partition_by_format                 = re.findall('(?<=to)\w+(?=\()', partition_by)[0] | lower -%}
@@ -136,13 +153,20 @@
         {%- set target_relation_max_datetime =
                     diu.get_max_datetime(target_relation, output_datetime_column).replace(tzinfo=None) -%}
 
-        {%- set last_record_datetime =
-                    [target_relation_max_datetime, materialization_start_date] | max -%}
+        {%- if anchor_mode == 'wall_clock' -%}
+            {%- set last_record_datetime =
+                        [fixed_now, materialization_start_date] | max -%}
+        {%- else -%}
+            {%- set last_record_datetime =
+                        [target_relation_max_datetime, materialization_start_date] | max -%}
+        {%- endif -%}
 
         {%- set start_time = last_record_datetime - diu.get_unit_interval(value=overwrite_size, unit=time_unit_name) -%}
 
         {{- diu.mcr_log_colored(
                 'Target relation exists' ~
+                '\nAnchor mode:\n\t' ~ anchor_mode ~
+                '\nTarget relation max datetime:\n\t' ~ target_relation_max_datetime ~
                 '\nLast record datetime:\n\t' ~ last_record_datetime ~
                 '\nLast record datetime with overwrite size:\n\t' ~ start_time, debug_mode) -}}
 
