@@ -183,6 +183,10 @@
                 'Copying partition "' ~ partition_id ~ '" from ' ~ target_relation ~ ' to ' ~ tmp_relation, silence_mode) -}}
         {%- do diu.copy_partition(target_relation, tmp_relation, partition_id) -%}
 
+    -- guarding against a duplicated ATTACH (e.g. retried statement after a dropped connection)
+    -- must run before any mutation touches tmp, otherwise the duplicate rows are indistinguishable
+        {%- do diu.check_partition_row_count_match(target_relation, tmp_relation, partition_id, silence_mode) -%}
+
     -- deleting data to be overwritten from tmp relation
         {%- do diu.wait_for_merges(tmp_relation) -%}
         {%- do run_query(
@@ -608,6 +612,60 @@
             attach partition id '{{ partition_id }}'
             from {{ existing_relation }}
     {%- endcall -%}
+{%- endmacro -%}
+
+
+{%- macro check_partition_row_count_match(existing_relation, intermediate_relation, partition_id, silence_mode) -%}
+{#
+    Guards against a duplicated ATTACH (e.g. the statement executed twice after a dropped
+    connection and client retry with the same query_id). Compares the row count of the just-copied
+    partition in intermediate_relation against the source partition_id row count in existing_relation
+    right after copy_partition, before any mutation can make the extra copy invisible to
+    check_duplicate_parts' hash-based comparison.
+    Arguments:
+        existing_relation(api.Relation):       The relation the partition was copied from
+        intermediate_relation(api.Relation):   The relation the partition was copied into
+        partition_id(string):                  The partition id that was just copied
+        silence_mode(bool):                    Should the log messages be silenced
+    Returns:
+        None (raises a compiler error on mismatch)
+#}
+    {%- set diu = dbt_improvado_utils -%}
+
+    {%- set row_counts_query -%}
+        select
+            (select sum(rows) from system.parts
+             where database = '{{ existing_relation.schema }}'
+               and table = '{{ existing_relation.identifier }}'
+               and partition_id = '{{ partition_id }}'
+               and active) as target_rows,
+            (select sum(rows) from system.parts
+             where database = '{{ intermediate_relation.schema }}'
+               and table = '{{ intermediate_relation.identifier }}'
+               and partition_id = '{{ partition_id }}'
+               and active) as tmp_rows
+    {%- endset -%}
+
+    {%- if execute -%}
+        {%- set result = run_query(row_counts_query).rows[0] -%}
+        {%- set target_rows = result['target_rows'] or 0 -%}
+        {%- set tmp_rows = result['tmp_rows'] or 0 -%}
+
+        {{- diu.mcr_log_colored(
+                'Row count guard for partition "' ~ partition_id ~ '":\n\ttarget: ' ~ target_rows ~
+                '\n\ttmp: ' ~ tmp_rows, silence_mode) -}}
+
+        {%- if target_rows != tmp_rows -%}
+            {%- do exceptions.raise_compiler_error(
+                    diu.mcr_log_colored(
+                        'ATTACH row-count mismatch on partition "' ~ partition_id ~ '":\n' ~
+                        '\ttarget (' ~ existing_relation ~ '): ' ~ target_rows ~ ' rows\n' ~
+                        '\ttmp (' ~ intermediate_relation ~ '): ' ~ tmp_rows ~ ' rows\n' ~
+                        'This indicates a duplicated ATTACH (e.g. a retried statement after a dropped connection).\n' ~
+                        'Aborting before the delete/insert/REPLACE PARTITION steps would make the duplicate ' ~
+                        'undetectable to check_duplicate_parts.', color='red')) -%}
+        {%- endif -%}
+    {%- endif -%}
 {%- endmacro -%}
 
 {%- macro get_partition_id(datetime_object, partition_by_format) -%}
