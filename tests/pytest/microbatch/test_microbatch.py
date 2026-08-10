@@ -9,6 +9,7 @@ from tests.pytest.constants import (
     MICROBATCH_INPUT_MODEL,
     MICROBATCH_TEST_MODEL,
     QUERY_COUNT_ROWS,
+    QUERY_LAST_INSERT_SETTINGS,
     QUERY_TIMESTAMP,
 )
 
@@ -60,6 +61,9 @@ class TestMicrobatch:
         }
         if test_params.get('batch_size'):
             dbt_vars['batch_size'] = test_params["batch_size"]
+
+        if test_params.get('batch_query_settings'):
+            dbt_vars['batch_query_settings'] = test_params["batch_query_settings"]
 
         query_condition = test_params['query_condition'] if test_params.get('query_condition') else ''
 
@@ -125,6 +129,33 @@ class TestMicrobatch:
         }
 
         self.execute_test(ch_client, test_params)
+
+    def test_batch_query_settings(self, ch_client, setup_test_environment):
+        """
+        batch_query_settings must reach ClickHouse on the batch INSERT without
+        changing the result (BI-9988)
+        """
+
+        min_timestamp = setup_test_environment['min_timestamp']
+
+        test_params = {
+            'materialization_start_date': min_timestamp.strftime("%Y-%m-%d"),
+            'batch_query_settings': {
+                'max_threads': 4,
+                'max_bytes_before_external_sort': 6000000000,
+            },
+        }
+
+        self.execute_test(ch_client, test_params)
+
+        con = ch_client
+        con.command('system flush logs')
+        settings = con.query_df(
+            QUERY_LAST_INSERT_SETTINGS.format(table_name=MICROBATCH_TEST_MODEL)
+        )['settings'][0]
+
+        assert settings['max_threads'] == '4'
+        assert settings['max_bytes_before_external_sort'] == '6000000000'
 
     def test_batching_24h(self, ch_client, setup_test_environment):
         """
