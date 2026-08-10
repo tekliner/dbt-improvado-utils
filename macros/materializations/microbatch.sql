@@ -43,6 +43,10 @@
     {%- set partition_by                        = config.require('partition_by') -%}
     {%- set partition_by_format                 = re.findall('(?<=to)\w+(?=\()', partition_by)[0] | lower -%}
 
+-- query settings for the heavy batch INSERT (BI-9988); the light DDL is already
+-- covered by the adapter-level query_settings
+    {%- set batch_query_settings                = config.get('batch_query_settings', default={}) -%}
+
 -- log settings
     {%- set debug_mode                          = config.get('debug_mode', default=false) -%}
     {%- set silence_mode                        = not config.get('silence_mode', default=false) -%}
@@ -218,7 +222,8 @@
                         where_conditions=where_conditions,
                         having_conditions=having_conditions,
                         output_column=output_datetime_column,
-                        debug_mode=debug_mode) -%}
+                        debug_mode=debug_mode,
+                        query_settings=batch_query_settings) -%}
 
         {%- if execute -%}
             {%- if loop.first -%}
@@ -373,7 +378,8 @@
                 'Creating non-existing relation:\n\t' ~ identifier, debug_mode) -}}
 
         {%- if type == 'table' -%}
-            {%- do create_table_as(temporary, relation, sql) -%}
+            {# `temporary` was previously an undeclared Jinja variable here (rendered as Undefined) #}
+            {%- do create_table_as(false, relation, sql) -%}
         {%- else -%}
             {%- do create_view_as(relation, sql) -%}
         {%- endif -%}
@@ -480,7 +486,26 @@
 {%- endmacro -%}
 
 
-{%- macro get_insert_query(sql, target_relation, input_models_list, final_settings_list, input_columns_list, where_conditions, having_conditions, output_column, debug_mode ) -%}
+{%- macro get_settings_clause(settings) -%}
+{#
+    Renders a SETTINGS clause from a dict, with sorted keys so the generated
+    SQL is deterministic (stable normalized_query_hash). Empty dict renders nothing.
+#}
+    {%- if settings -%}
+        {%- set parts = [] -%}
+        {%- for key, value in settings | dictsort -%}
+            {%- if value is string -%}
+                {%- do parts.append("{} = '{}'".format(key, value)) -%}
+            {%- else -%}
+                {%- do parts.append('{} = {}'.format(key, value)) -%}
+            {%- endif -%}
+        {%- endfor -%}
+        settings {{ parts | join(', ') }}
+    {%- endif -%}
+{%- endmacro -%}
+
+
+{%- macro get_insert_query(sql, target_relation, input_models_list, final_settings_list, input_columns_list, where_conditions, having_conditions, output_column, debug_mode, query_settings={} ) -%}
 {#
     Generates the insert query
     Arguments:
@@ -493,6 +518,7 @@
         having_conditions(array):   The list of having conditions
         output_column(string):      The output column name
         debug_mode(bool):           The debug mode
+        query_settings(dict):       ClickHouse settings appended to the INSERT (BI-9988)
     Returns:
         Substituted sql query
 #}
@@ -537,6 +563,7 @@
         where
             toDateTime({{ output_column }}) >= '{{ left_having }}'
             and toDateTime({{ output_column }}) < '{{ right_having }}'
+        {{ dbt_improvado_utils.get_settings_clause(query_settings) }}
     {%- endset -%}
 
     {{- return(insert_query) -}}
