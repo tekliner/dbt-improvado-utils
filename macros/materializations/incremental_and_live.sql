@@ -226,7 +226,12 @@
 
             {% set input_relation = '`{}`.`{}`'.format(schema, input_model) %}
             {% set ia_relation = '`internal_analytics`.`{}`'.format(input_model) %}
-            {% set sql_replacement_template = "(select * from {} where {} between '{}' and '{}')" %}
+            {# Window bounds are rendered as 'YYYY-MM-DD HH:MM:SS'. A Date input column cannot be compared
+               with such a string literal (Code 53, TYPE_MISMATCH), so the bounds are cast explicitly:
+               toDate() on the left only widens the window to the start of that day, toDateTime() on the
+               right keeps DateTime columns exact (toDate() there would cut the window to midnight).
+               Either way the column itself stays bare, so its primary key / partition index is usable. #}
+            {% set sql_replacement_template = "(select * from {} where {} between toDate('{}') and toDateTime('{}'))" %}
 
             {% set current_schema_replacement = sql_replacement_template.format(input_relation, input_column, left_where, right_where) %}
             {% set ia_schema_replacement = sql_replacement_template.format(ia_relation, input_column, left_where, right_where) %}
