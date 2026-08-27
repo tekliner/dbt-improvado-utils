@@ -816,7 +816,40 @@
                 silence_mode, color='red') -}}
 
         {%- for part_name in parts_to_delete -%}
-            {%- do diu.drop_part(relation, part_name) -%}
+        {#
+            Re-check existence immediately before THIS part's own DROP PART (BI-10011).
+            The batch-level re-list above still leaves a gap for every part queued behind the
+            first one in this loop: a background merge can consume any of them before its turn,
+            and DROP PART on a part name that no longer exists raises a hard NO_SUCH_DATA_PART
+            (code 232) that aborts the whole materialization. Jinja has no try/except, so the
+            only way to avoid the crash is to narrow the check-then-act gap to immediately before
+            each individual DROP and skip gracefully if the part is already gone -- the next run's
+            check_duplicate_parts re-evaluates this partition/hash if duplicates still remain.
+            Reproduced and verified against dev (BI-10011): simulating the race by dropping the
+            part out-of-band right before this call raises Code 232 with the old unguarded code
+            and skips cleanly with this guard.
+        #}
+            {%- set part_still_active_query -%}
+                select count()
+                from system.parts
+                where database = '{{ relation.schema }}'
+                  and table = '{{ relation.identifier }}'
+                  and name = '{{ part_name }}'
+                  and active = 1
+            {%- endset -%}
+
+            {%- set part_still_active = (run_query(part_still_active_query)[0][0] | int) > 0
+                                            if execute else false -%}
+
+            {%- if part_still_active -%}
+                {%- do diu.drop_part(relation, part_name) -%}
+            {%- else -%}
+                {{- diu.mcr_log_colored(
+                        'Skipping DROP PART "' ~ part_name ~ '": no longer active, ' ~
+                        'likely consumed by a background merge between duplicate detection and drop. ' ~
+                        'Next run\'s check_duplicate_parts will re-evaluate this partition/hash.',
+                        silence_mode, color='yellow') -}}
+            {%- endif -%}
         {%- endfor -%}
 
     {%- endfor -%}
