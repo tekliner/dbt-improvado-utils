@@ -106,6 +106,47 @@ class TestMicrobatch:
 
         self.execute_test(ch_client, test_params)
 
+    def test_stale_tmp_relation_is_swept_and_not_double_counted(self, ch_client, setup_test_environment):
+        """
+        A crashed prior run can leave its invocation-scoped tmp table behind (each run now
+        gets its own uniquely-named tmp table so overlapping runs can't collide on it). The
+        next run must sweep that leftover rather than let it accumulate, and must not read
+        rows from it into the target.
+        """
+
+        con = ch_client
+        min_timestamp = setup_test_environment['min_timestamp']
+        materialization_start_date = min_timestamp.strftime("%Y-%m-%d")
+
+        self.execute_test(ch_client, {'materialization_start_date': materialization_start_date})
+
+        stale_tmp_table = f'{MICROBATCH_TEST_MODEL}__microbatch_tmp_deadbeefdeadbeefdeadbeefdeadbeef'
+        con.command(
+            f'create table default.{stale_tmp_table} engine = MergeTree order by tuple() '
+            f'as select * from default.{MICROBATCH_TEST_MODEL} limit 5'
+        )
+
+        run_dbt(
+            [
+                'run',
+                '--select',
+                f'{MICROBATCH_TEST_MODEL}',
+                '--vars',
+                f"{{'materialization_start_date': '{materialization_start_date}', 'enabled': True}}",
+            ]
+        )
+
+        remaining_stale = con.query_df(
+            f"select name from system.tables where database = 'default' and name = '{stale_tmp_table}'"
+        )
+        assert remaining_stale.empty, 'stale tmp table from a previous run was not swept'
+
+        actual_result = con.query_df(QUERY_COUNT_ROWS.format(table_name=MICROBATCH_TEST_MODEL))
+        expected_result = con.query_df(QUERY_COUNT_ROWS.format(table_name=MICROBATCH_INPUT_MODEL))
+        assert expected_result['rows_count'][0] == actual_result['rows_count'][0], (
+            'row count changed after a run swept a stale tmp table - rows leaked in from it'
+        )
+
     def test_batching_8h(self, ch_client, setup_test_environment):
         """
         Microbatch test with 8h batch size

@@ -170,11 +170,23 @@
     {{- diu.mcr_log_colored('Interval parts count:\n\t' ~ parts_count, silence_mode) -}}
 
 -- temporary table creation
+-- the tmp identifier is scoped to this dbt invocation: two overlapping runs of the same
+-- model (e.g. a retried CronJob execution) must never write into the same physical tmp
+-- table, since that race is invisible to check_duplicate_parts (each run's INSERT produces
+-- its own MergeTree parts with a different hash, even when the resulting rows are identical)
+    {%- set tmp_identifier = target_relation.identifier ~ '__microbatch_tmp_' ~ (invocation_id | replace('-', '')) -%}
+
+    {%- do diu.cleanup_stale_microbatch_tmp_relations(
+                schema=target_schema,
+                base_identifier=target_relation.identifier,
+                keep_identifier=tmp_identifier,
+                silence_mode=silence_mode) -%}
+
     {%- set tmp_relation_exists, tmp_relation =
                 get_or_create_relation(
                     database=none,
                     schema=target_schema,
-                    identifier=target_relation.identifier ~ '__microbatch_tmp',
+                    identifier=tmp_identifier,
                     type='table') -%}
 
     {%- do drop_relation(tmp_relation) -%}
@@ -767,6 +779,50 @@
         {%- do run_query('select sleep(' ~ sleep_seconds ~ ')') -%}
     {%- endfor -%}
 {%- endmacro -%}
+
+{%- macro cleanup_stale_microbatch_tmp_relations(schema, base_identifier, keep_identifier, silence_mode) -%}
+{#
+    Drops leftover per-invocation tmp tables from previous runs of this model that crashed
+    or were killed before reaching their own drop_relation cleanup at the end of the
+    materialization. Runs before this invocation creates its own tmp table so orphaned tmp
+    tables don't accumulate now that each run's tmp identifier is invocation-scoped.
+    Arguments:
+        schema(string):           The schema to search in
+        base_identifier(string):  The target model's identifier (without the tmp suffix)
+        keep_identifier(string):  This invocation's own tmp identifier - never drop it
+        silence_mode(bool):       Should the log messages be silenced
+    Returns:
+        None
+#}
+    {%- set diu = dbt_improvado_utils -%}
+
+    {%- set stale_tmp_tables_query -%}
+        select name
+        from system.tables
+        where database = '{{ schema }}'
+          and name like '{{ base_identifier }}\_\_microbatch\_tmp\_%'
+          and name != '{{ keep_identifier }}'
+    {%- endset -%}
+
+    {%- if execute -%}
+        {%- set stale_tables = run_query(stale_tmp_tables_query).rows -%}
+
+        {%- for row in stale_tables -%}
+            {{- diu.mcr_log_colored(
+                    'Dropping stale microbatch tmp table left over from a previous run: ' ~ row['name'],
+                    silence_mode, color='red') -}}
+
+            {%- set _, stale_relation =
+                        get_or_create_relation(
+                            database=none,
+                            schema=schema,
+                            identifier=row['name'],
+                            type='table') -%}
+            {%- do drop_relation(stale_relation) -%}
+        {%- endfor -%}
+    {%- endif -%}
+{%- endmacro -%}
+
 
 {%- macro check_duplicate_parts(relation, silence_mode) -%}
 {#
