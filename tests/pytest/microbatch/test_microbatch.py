@@ -147,6 +147,59 @@ class TestMicrobatch:
             'row count changed after a run swept a stale tmp table - rows leaked in from it'
         )
 
+    def test_check_duplicate_parts_ignores_empty_parts(self, ch_client):
+        """
+        AI-1668. A DELETE mutation that removes every row of a part leaves a 0-row part behind.
+        Since ClickHouse 26.3 such parts stay active for 30s-5min (dedicated cleanup thread),
+        and all empty parts share one hash_of_all_files, so check_duplicate_parts used to treat
+        them as duplicates and DROP PART them - racing the cleanup thread into a hard
+        NO_SUCH_DATA_PART (code 232) that aborted the whole materialization.
+        Empty parts hold no rows: the check must skip them and leave the table untouched.
+        remove_empty_parts=0 pins the empties in place so the test is deterministic on any
+        ClickHouse version.
+        """
+
+        con = ch_client
+        table = 'check_duplicate_parts_empty_parts_test'
+        con.command(f'drop table if exists default.{table}')
+        con.command(
+            f'create table default.{table} (p UInt8, marker UInt8, v UInt64) '
+            f'engine = MergeTree partition by p order by v settings remove_empty_parts = 0'
+        )
+        # three separate inserts -> three parts in one partition; two of them will be emptied
+        con.command(f'insert into default.{table} values (1, 1, 1)')
+        con.command(f'insert into default.{table} values (1, 1, 2)')
+        con.command(f'insert into default.{table} values (1, 0, 3)')
+        con.command(
+            f'alter table default.{table} delete where marker = 1 settings mutations_sync = 2'
+        )
+
+        parts_query = (
+            "select name, rows, hash_of_all_files from system.parts "
+            f"where database = 'default' and table = '{table}' and active order by name"
+        )
+        before = con.query_df(parts_query)
+        assert len(before) == 3, f'expected 3 active parts, got {before}'
+        empties = before[before['rows'] == 0]
+        assert len(empties) == 2, f'expected 2 empty parts, got {before}'
+        assert empties['hash_of_all_files'].nunique() == 1, 'empty parts should share one hash'
+
+        run_dbt(
+            [
+                'run-operation',
+                'check_duplicate_parts',
+                '--args',
+                f"{{relation: {{schema: default, identifier: {table}}}, silence_mode: true}}",
+            ]
+        )
+
+        after = con.query_df(parts_query)
+        assert list(after['name']) == list(before['name']), (
+            f'check_duplicate_parts dropped parts it must ignore: before={before} after={after}'
+        )
+        rows = con.query_df(QUERY_COUNT_ROWS.format(table_name=table))
+        assert rows['rows_count'][0] == 1
+
     def test_batching_8h(self, ch_client, setup_test_environment):
         """
         Microbatch test with 8h batch size
