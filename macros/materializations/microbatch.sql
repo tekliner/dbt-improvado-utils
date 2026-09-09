@@ -846,6 +846,13 @@
             database = '{{ relation.schema }}'
             and table = '{{ relation.identifier }}'
             and active = 1
+            -- AI-1668: ignore empty parts. Since ClickHouse 26.3 (PR #91574, dedicated cleanup thread)
+            -- a DELETE mutation that removes every row of a part leaves a 0-row part active for
+            -- 30s-5min instead of ~1s. All empty parts share one hash_of_all_files, so they look like
+            -- duplicates here; DROP PART on them races the cleanup thread and fails with code 232
+            -- (NO_SUCH_DATA_PART). Empty parts hold no rows, so skipping them cannot lose or
+            -- duplicate data; ClickHouse removes them itself.
+            and rows > 0
         group by
             partition_id,
             hash_of_all_files
