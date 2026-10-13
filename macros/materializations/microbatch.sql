@@ -734,14 +734,32 @@
 #}
     {%- set diu = dbt_improvado_utils -%}
 
+    {#-
+        Untouched rows = all rows of the partition (system.parts, metadata only) minus the rows
+        at or after start_time. Counting the tail instead of the untouched rows themselves keeps
+        the scan to the last overwrite window: on Lisbon Palantir (2026-10-13) the direct count
+        read the whole partition - 120M rows, 7-9 s per relation on fct_order_run_events and
+        fct_dataflow_run_events - while the tail count reads ~4M rows in about 1 s and gives the
+        same number.
+    -#}
     {%- set row_counts_query -%}
         select
-            (select count() from {{ existing_relation.schema }}.{{ existing_relation.identifier }}
-             where _partition_id = '{{ partition_id }}'
-               and {{ output_datetime_column }} < toDateTime('{{ start_time }}')) as target_rows,
-            (select count() from {{ intermediate_relation.schema }}.{{ intermediate_relation.identifier }}
-             where _partition_id = '{{ partition_id }}'
-               and {{ output_datetime_column }} < toDateTime('{{ start_time }}')) as tmp_rows
+            (select sum(rows) from system.parts
+             where database = '{{ existing_relation.schema }}'
+               and table = '{{ existing_relation.identifier }}'
+               and partition_id = '{{ partition_id }}'
+               and active)
+            - (select count() from {{ existing_relation.schema }}.{{ existing_relation.identifier }}
+               where _partition_id = '{{ partition_id }}'
+                 and {{ output_datetime_column }} >= toDateTime('{{ start_time }}')) as target_rows,
+            (select sum(rows) from system.parts
+             where database = '{{ intermediate_relation.schema }}'
+               and table = '{{ intermediate_relation.identifier }}'
+               and partition_id = '{{ partition_id }}'
+               and active)
+            - (select count() from {{ intermediate_relation.schema }}.{{ intermediate_relation.identifier }}
+               where _partition_id = '{{ partition_id }}'
+                 and {{ output_datetime_column }} >= toDateTime('{{ start_time }}')) as tmp_rows
     {%- endset -%}
 
     {%- if execute -%}
