@@ -749,19 +749,25 @@
         {%- set target_rows = result['target_rows'] or 0 -%}
         {%- set tmp_rows = result['tmp_rows'] or 0 -%}
 
-        {{- diu.mcr_log_colored(
-                'Untouched rows guard for partition "' ~ partition_id ~ '" before ' ~ start_time ~
-                ':\n\ttarget: ' ~ target_rows ~ '\n\ttmp: ' ~ tmp_rows, silence_mode) -}}
+        {#- mcr_log_colored needs `this`, which a bare run-operation (the pytest for this macro) lacks -#}
+        {%- if this is defined -%}
+            {{- diu.mcr_log_colored(
+                    'Untouched rows guard for partition "' ~ partition_id ~ '" before ' ~ start_time ~
+                    ':\n\ttarget: ' ~ target_rows ~ '\n\ttmp: ' ~ tmp_rows, silence_mode) -}}
+        {%- endif -%}
 
         {%- if target_rows != tmp_rows -%}
-            {%- do exceptions.raise_compiler_error(
-                    diu.mcr_log_colored(
-                        'Untouched rows mismatch on partition "' ~ partition_id ~ '" before ' ~ start_time ~ ':\n' ~
-                        '\ttarget (' ~ existing_relation ~ '): ' ~ target_rows ~ ' rows\n' ~
-                        '\ttmp (' ~ intermediate_relation ~ '): ' ~ tmp_rows ~ ' rows\n' ~
-                        'This run only rewrites rows at or after start_time, so the older rows in tmp ' ~
-                        'were duplicated or lost on the way.\n' ~
-                        'Aborting before REPLACE PARTITION; target is left as it was.', color='red')) -%}
+            {%- set mismatch_message =
+                    'Untouched rows mismatch on partition "' ~ partition_id ~ '" before ' ~ start_time ~ ':\n' ~
+                    '\ttarget (' ~ existing_relation.schema ~ '.' ~ existing_relation.identifier ~ '): ' ~ target_rows ~ ' rows\n' ~
+                    '\ttmp (' ~ intermediate_relation.schema ~ '.' ~ intermediate_relation.identifier ~ '): ' ~ tmp_rows ~ ' rows\n' ~
+                    'This run only rewrites rows at or after start_time, so the older rows in tmp ' ~
+                    'were duplicated or lost on the way.\n' ~
+                    'Aborting before REPLACE PARTITION; target is left as it was.' -%}
+            {%- if this is defined -%}
+                {{- diu.mcr_log_colored(mismatch_message, true, color='red') -}}
+            {%- endif -%}
+            {%- do exceptions.raise_compiler_error(mismatch_message) -%}
         {%- endif -%}
     {%- endif -%}
 {%- endmacro -%}
