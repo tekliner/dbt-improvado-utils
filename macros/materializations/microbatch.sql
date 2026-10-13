@@ -264,6 +264,11 @@
     -- checking tmp table for duplicate parts before replacing and dropping if needed
         {%- do diu.check_duplicate_parts(tmp_relation, silence_mode) -%}
 
+    -- last guard before the swap: rows older than start_time were only copied, never rewritten,
+    -- so tmp must hold exactly as many of them as target does
+        {%- do diu.check_untouched_rows_match(
+                    target_relation, tmp_relation, partition_id, output_datetime_column, start_time, silence_mode) -%}
+
     -- replacing partitions
         {{- diu.mcr_log_colored('Replacing partitions from ' ~ tmp_relation ~ ' to ' ~ target_relation, silence_mode) -}}
         {{- diu.insert_overwrite_partitions(target_relation, tmp_relation) -}}
@@ -703,6 +708,66 @@
                         'This indicates a duplicated ATTACH (e.g. a retried statement after a dropped connection).\n' ~
                         'Aborting before the delete/insert/REPLACE PARTITION steps would make the duplicate ' ~
                         'undetectable to check_duplicate_parts.', color='red')) -%}
+        {%- endif -%}
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro check_untouched_rows_match(existing_relation, intermediate_relation, partition_id, output_datetime_column, start_time, silence_mode) -%}
+{#
+    Last guard before REPLACE PARTITION. The run rewrites only rows at or after start_time; rows
+    older than that reach intermediate_relation by copy_partition alone, so both relations must
+    hold the same number of them. check_partition_row_count_match cannot see an extra copy that
+    lands after it has run, and check_duplicate_parts compares parts by hash_of_all_files, which
+    stops matching once a merge or the DELETE mutation regroups one copy differently from the
+    other. On 2026-10-07 that left a doubled slice in fct_order_run_events and
+    fct_dataflow_run_events and a doubled month in int_order_run_events_incremental_billing_calc.
+    Counting rows is independent of how the parts are laid out.
+    Arguments:
+        existing_relation(api.Relation):       The relation the partition was copied from
+        intermediate_relation(api.Relation):   The relation about to replace that partition
+        partition_id(string):                  The partition id that was copied
+        output_datetime_column(string):        The model's output datetime column
+        start_time(datetime):                  Rows at or after it are rewritten by this run
+        silence_mode(bool):                    Should the log messages be silenced
+    Returns:
+        None (raises a compiler error on mismatch)
+#}
+    {%- set diu = dbt_improvado_utils -%}
+
+    {%- set row_counts_query -%}
+        select
+            (select count() from {{ existing_relation.schema }}.{{ existing_relation.identifier }}
+             where _partition_id = '{{ partition_id }}'
+               and {{ output_datetime_column }} < toDateTime('{{ start_time }}')) as target_rows,
+            (select count() from {{ intermediate_relation.schema }}.{{ intermediate_relation.identifier }}
+             where _partition_id = '{{ partition_id }}'
+               and {{ output_datetime_column }} < toDateTime('{{ start_time }}')) as tmp_rows
+    {%- endset -%}
+
+    {%- if execute -%}
+        {%- set result = run_query(row_counts_query).rows[0] -%}
+        {%- set target_rows = result['target_rows'] or 0 -%}
+        {%- set tmp_rows = result['tmp_rows'] or 0 -%}
+
+        {#- mcr_log_colored needs `this`, which a bare run-operation (the pytest for this macro) lacks -#}
+        {%- if this is defined -%}
+            {{- diu.mcr_log_colored(
+                    'Untouched rows guard for partition "' ~ partition_id ~ '" before ' ~ start_time ~
+                    ':\n\ttarget: ' ~ target_rows ~ '\n\ttmp: ' ~ tmp_rows, silence_mode) -}}
+        {%- endif -%}
+
+        {%- if target_rows != tmp_rows -%}
+            {%- set mismatch_message =
+                    'Untouched rows mismatch on partition "' ~ partition_id ~ '" before ' ~ start_time ~ ':\n' ~
+                    '\ttarget (' ~ existing_relation.schema ~ '.' ~ existing_relation.identifier ~ '): ' ~ target_rows ~ ' rows\n' ~
+                    '\ttmp (' ~ intermediate_relation.schema ~ '.' ~ intermediate_relation.identifier ~ '): ' ~ tmp_rows ~ ' rows\n' ~
+                    'This run only rewrites rows at or after start_time, so the older rows in tmp ' ~
+                    'were duplicated or lost on the way.\n' ~
+                    'Aborting before REPLACE PARTITION; target is left as it was.' -%}
+            {%- if this is defined -%}
+                {{- diu.mcr_log_colored(mismatch_message, true, color='red') -}}
+            {%- endif -%}
+            {%- do exceptions.raise_compiler_error(mismatch_message) -%}
         {%- endif -%}
     {%- endif -%}
 {%- endmacro -%}

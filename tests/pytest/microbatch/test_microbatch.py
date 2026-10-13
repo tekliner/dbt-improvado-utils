@@ -200,6 +200,52 @@ class TestMicrobatch:
         rows = con.query_df(QUERY_COUNT_ROWS.format(table_name=table))
         assert rows['rows_count'][0] == 1
 
+    def test_check_untouched_rows_match(self, ch_client):
+        """
+        Last guard before REPLACE PARTITION: rows older than start_time are only copied into the
+        tmp relation, so target and tmp must hold the same number of them. The guard has to pass
+        on a faithful copy and abort on a copy that picked up a second set of those rows, even
+        when the parts no longer look alike - which is what check_duplicate_parts missed on
+        2026-10-07. Rows at or after start_time are rewritten by the run and must not count.
+        """
+
+        con = ch_client
+        target = 'check_untouched_rows_target_test'
+        tmp = 'check_untouched_rows_tmp_test'
+        for table in (target, tmp):
+            con.command(f'drop table if exists default.{table}')
+            con.command(
+                f'create table default.{table} (event_datetime DateTime, v UInt64) '
+                f'engine = MergeTree partition by toYYYYMM(event_datetime) order by v'
+            )
+        # two rows before start_time, one after it
+        con.command(
+            f"insert into default.{target} values "
+            f"('2026-10-06 20:00:00', 1), ('2026-10-06 21:00:00', 2), ('2026-10-06 23:00:00', 3)"
+        )
+        con.command(f"alter table default.{tmp} attach partition id '202610' from default.{target}")
+        # the run rewrote the tail with a different number of rows - must not matter
+        con.command(f"insert into default.{tmp} values ('2026-10-06 23:30:00', 4)")
+
+        args = (
+            f"{{existing_relation: {{schema: default, identifier: {target}}}, "
+            f"intermediate_relation: {{schema: default, identifier: {tmp}}}, "
+            f"partition_id: '202610', output_datetime_column: event_datetime, "
+            f"start_time: '2026-10-06 22:00:00', silence_mode: true}}"
+        )
+        run_dbt(['run-operation', 'check_untouched_rows_match', '--args', args])
+
+        # a second set of the old rows lands in tmp as a separate, differently shaped part
+        con.command(
+            f"insert into default.{tmp} values ('2026-10-06 20:00:00', 1), ('2026-10-06 21:00:00', 2)"
+        )
+        run_dbt(
+            ['run-operation', 'check_untouched_rows_match', '--args', args], expect_pass=False
+        )
+
+        rows = con.query_df(QUERY_COUNT_ROWS.format(table_name=target))
+        assert rows['rows_count'][0] == 3, 'the guard must leave target untouched'
+
     def test_batching_8h(self, ch_client, setup_test_environment):
         """
         Microbatch test with 8h batch size
