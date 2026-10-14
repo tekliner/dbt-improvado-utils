@@ -167,7 +167,32 @@
 
     {{- diu.mcr_log_colored('Calculating interval parts', silence_mode) -}}
     {%- set parts_count = [(interval_range / batch_size) | round(0, 'ceil') | int, 2] | max -%}
-    {{- diu.mcr_log_colored('Interval parts count:\n\t' ~ parts_count, silence_mode) -}}
+
+    {#-
+        parts_count never drops below 2, so a run whose window fits one batch (every 5-minute
+        cronjob model: overwrite_size < batch_size) always gets a second batch that starts after
+        now. Its HAVING window can only match rows timestamped in the future, and on Palantir
+        Lisbon not one of ~90,000 such batches wrote a row in 30 days (2026-09-14..10-14, 32
+        models, all users) -- yet the inputs still run their full query. On src_improvado_order_run_events,
+        _legacy and _runs_billing the future batch costs 60-85% of the real one (the
+        mrt_order_run_events_v2 joins are built regardless of the window): ~0.25 core around the
+        clock across the five BI-10045 models. Batches starting after fixed_now are skipped; the
+        first batch is always kept, because the tmp partition already had rows >= start_time
+        deleted and must be refilled even if the target somehow holds future-dated rows.
+        materialization_end_date is left alone: a backfill ends where it ends.
+    -#}
+    {%- set batch_indexes = [] -%}
+    {%- for i in range(parts_count) -%}
+        {%- set interval_start = start_time + diu.get_unit_interval(value=i * batch_size, unit=time_unit_name) -%}
+        {%- if i == 0 or materialization_end_date or interval_start <= fixed_now -%}
+            {%- do batch_indexes.append(i) -%}
+        {%- endif -%}
+    {%- endfor -%}
+
+    {{- diu.mcr_log_colored(
+            'Interval parts count:\n\t' ~ parts_count ~
+            ((' (' ~ (parts_count - batch_indexes | length) ~ ' starting after ' ~ fixed_now ~ ' skipped)')
+                if batch_indexes | length < parts_count else ''), silence_mode) -}}
 
 -- temporary table creation
 -- the tmp identifier is scoped to this dbt invocation: two overlapping runs of the same
@@ -212,7 +237,7 @@
     {%- endif -%}
 
 -- insert queries generation
-    {%- for i in range(parts_count) -%}
+    {%- for i in batch_indexes -%}
     -- inserting intervals list calculation
         {%- set where_conditions, having_conditions =
                     diu.get_intervals_list(

@@ -106,6 +106,51 @@ class TestMicrobatch:
 
         self.execute_test(ch_client, test_params)
 
+    def test_batches_starting_after_now_are_skipped(self, ch_client, setup_test_environment):
+        """
+        parts_count has a floor of 2, so an incremental run whose window fits one batch
+        (overwrite 12h < batch 24h here) used to issue a second INSERT whose window starts
+        after now. It never matches a row but still runs the whole input query. Such batches
+        must be skipped; the run must still issue its first batch and keep the row count.
+        """
+
+        con = ch_client
+        min_timestamp = setup_test_environment['min_timestamp']
+        materialization_start_date = min_timestamp.strftime("%Y-%m-%d")
+
+        self.execute_test(ch_client, {'materialization_start_date': materialization_start_date})
+
+        run_started_at = con.query_df('select now() as t')['t'][0]
+
+        run_dbt(
+            [
+                'run',
+                '--select',
+                f'{MICROBATCH_TEST_MODEL}',
+                '--vars',
+                f"{{'materialization_start_date': '{materialization_start_date}', 'enabled': True}}",
+            ]
+        )
+
+        con.command('system flush logs')
+        batch_inserts = con.query_df(
+            f"""
+            select count() as n
+            from system.query_log
+            where type = 'QueryFinish'
+              and query_kind = 'Insert'
+              and event_time >= toDateTime('{run_started_at}')
+              and query like '%{MICROBATCH_TEST_MODEL}\\_\\_microbatch\\_tmp\\_%'
+            """
+        )['n'][0]
+        assert batch_inserts == 1, (
+            f'expected exactly one batch INSERT for a window that fits one batch, got {batch_inserts}'
+        )
+
+        actual_result = con.query_df(QUERY_COUNT_ROWS.format(table_name=MICROBATCH_TEST_MODEL))
+        expected_result = con.query_df(QUERY_COUNT_ROWS.format(table_name=MICROBATCH_INPUT_MODEL))
+        assert expected_result['rows_count'][0] == actual_result['rows_count'][0]
+
     def test_stale_tmp_relation_is_swept_and_not_double_counted(self, ch_client, setup_test_environment):
         """
         A crashed prior run can leave its invocation-scoped tmp table behind (each run now
