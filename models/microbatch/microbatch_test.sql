@@ -10,6 +10,7 @@
     partition_by                = 'toYYYYMM(event_datetime)',
     order_by                    = 'event_datetime',
     enabled                     = var('enabled', false),
+    batch_query_settings        = var('batch_query_settings', default={}),
     )
 }}
 
