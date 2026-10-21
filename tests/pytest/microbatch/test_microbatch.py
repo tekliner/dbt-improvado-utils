@@ -303,6 +303,59 @@ class TestMicrobatch:
         rows = con.query_df(QUERY_COUNT_ROWS.format(table_name=table))
         assert rows['rows_count'][0] == 3
 
+    def test_identical_parts_in_target_are_healed_before_copy(self, ch_client, setup_test_environment):
+        """
+        BI-10065. A server restart right after a REPLACE PARTITION can bring the replaced parts
+        back as active next to their replacements: byte-identical twins, every row twice. The
+        next incremental run used to copy both into tmp, drop one there, and then refuse the
+        REPLACE because tmp held fewer old rows than target - on every run until someone
+        dropped the twins by hand. Now the default 'drop' mode removes the extra copies in
+        target before the copy: the run passes and the row count matches the input again.
+        """
+
+        con = ch_client
+        min_timestamp = setup_test_environment['min_timestamp']
+        materialization_start_date = min_timestamp.strftime("%Y-%m-%d")
+        dbt_vars = f"{{'materialization_start_date': '{materialization_start_date}', 'enabled': True}}"
+
+        self.execute_test(ch_client, {'materialization_start_date': materialization_start_date})
+
+        # the partition the next run copies: the one holding max(event_datetime) - overwrite_size
+        partition_id = con.query_df(
+            f"select toString(toYYYYMM(max(event_datetime) - interval 12 hour)) as p "
+            f"from default.{MICROBATCH_TEST_MODEL}"
+        )['p'][0]
+
+        # twin every part of that partition: attach it into a helper table and back again
+        helper = f'{MICROBATCH_TEST_MODEL}__twin_helper'
+        con.command(f'drop table if exists default.{helper}')
+        con.command(f'create table default.{helper} as default.{MICROBATCH_TEST_MODEL}')
+        con.command(
+            f"alter table default.{helper} attach partition id '{partition_id}' "
+            f"from default.{MICROBATCH_TEST_MODEL}"
+        )
+        con.command(
+            f"alter table default.{MICROBATCH_TEST_MODEL} attach partition id '{partition_id}' "
+            f"from default.{helper}"
+        )
+        con.command(f'drop table default.{helper}')
+
+        pairs_query = (
+            "select count() as n from (select hash_of_all_files from system.parts "
+            f"where database = 'default' and table = '{MICROBATCH_TEST_MODEL}' and active and rows > 0 "
+            "group by partition_id, hash_of_all_files having count() > 1)"
+        )
+        assert con.query_df(pairs_query)['n'][0] > 0, 'the setup did not create identical parts'
+        input_rows = con.query_df(QUERY_COUNT_ROWS.format(table_name=MICROBATCH_INPUT_MODEL))['rows_count'][0]
+        doubled = con.query_df(QUERY_COUNT_ROWS.format(table_name=MICROBATCH_TEST_MODEL))['rows_count'][0]
+        assert doubled > input_rows, 'the setup did not double any rows'
+
+        run_dbt(['run', '--select', f'{MICROBATCH_TEST_MODEL}', '--vars', dbt_vars])
+
+        assert con.query_df(pairs_query)['n'][0] == 0, 'identical parts survived the run'
+        actual = con.query_df(QUERY_COUNT_ROWS.format(table_name=MICROBATCH_TEST_MODEL))['rows_count'][0]
+        assert actual == input_rows, f'row count after healing: {actual}, input: {input_rows}'
+
     def test_check_untouched_rows_match(self, ch_client):
         """
         Last guard before REPLACE PARTITION: rows older than start_time are only copied into the
