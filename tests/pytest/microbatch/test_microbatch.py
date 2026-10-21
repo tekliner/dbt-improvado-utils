@@ -245,6 +245,62 @@ class TestMicrobatch:
         rows = con.query_df(QUERY_COUNT_ROWS.format(table_name=table))
         assert rows['rows_count'][0] == 1
 
+    def test_check_duplicate_parts_report_mode_keeps_copies(self, ch_client):
+        """
+        BI-10065. fct_product_domain_events' target held six pairs of parts with identical
+        hash_of_all_files. copy_partition handed both copies to tmp, check_duplicate_parts dropped
+        one of each, and check_untouched_rows_match then refused the REPLACE on every run because
+        tmp held fewer old rows than target. action='report' must log the pairs and leave every
+        part in place so the history goes back unchanged; the default action='drop' must still
+        keep exactly one copy. An unknown action is rejected before anything is touched.
+        """
+
+        con = ch_client
+        table = 'check_duplicate_parts_report_mode_test'
+        con.command(f'drop table if exists default.{table}')
+        con.command(
+            f'create table default.{table} (event_datetime DateTime, v UInt64) '
+            f'engine = MergeTree partition by toYYYYMM(event_datetime) order by v'
+        )
+        # two inserts with identical content -> two parts with the same hash_of_all_files
+        for _ in range(2):
+            con.command(
+                f"insert into default.{table} values ('2026-10-06 20:00:00', 1), ('2026-10-06 21:00:00', 2)"
+            )
+        con.command(f"insert into default.{table} values ('2026-10-06 22:00:00', 3)")
+
+        parts_query = (
+            "select name, rows, hash_of_all_files from system.parts "
+            f"where database = 'default' and table = '{table}' and active order by name"
+        )
+        before = con.query_df(parts_query)
+        assert len(before) == 3, f'expected 3 active parts, got {before}'
+        assert before['hash_of_all_files'].nunique() == 2, f'expected one duplicated hash, got {before}'
+
+        def args(action):
+            return (
+                f"{{relation: {{schema: default, identifier: {table}}}, "
+                f"silence_mode: true, action: {action}}}"
+            )
+
+        run_dbt(['run-operation', 'check_duplicate_parts', '--args', args('bogus')], expect_pass=False)
+        run_dbt(['run-operation', 'check_duplicate_parts', '--args', args('report')])
+
+        after_report = con.query_df(parts_query)
+        assert list(after_report['name']) == list(before['name']), (
+            f'report mode must not drop parts: before={before} after={after_report}'
+        )
+        rows = con.query_df(QUERY_COUNT_ROWS.format(table_name=table))
+        assert rows['rows_count'][0] == 5
+
+        run_dbt(['run-operation', 'check_duplicate_parts', '--args', args('drop')])
+
+        after_drop = con.query_df(parts_query)
+        assert len(after_drop) == 2, f'drop mode must keep one copy: {after_drop}'
+        assert after_drop['hash_of_all_files'].nunique() == 2
+        rows = con.query_df(QUERY_COUNT_ROWS.format(table_name=table))
+        assert rows['rows_count'][0] == 3
+
     def test_check_untouched_rows_match(self, ch_client):
         """
         Last guard before REPLACE PARTITION: rows older than start_time are only copied into the
