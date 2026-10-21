@@ -120,7 +120,18 @@ class TestMicrobatch:
 
         self.execute_test(ch_client, {'materialization_start_date': materialization_start_date})
 
-        run_started_at = con.query_df('select now() as t')['t'][0]
+        # counted as a delta, not by event_time: a now() taken from the client against the
+        # server's event_time picked up the full-refresh INSERTs of the step above (10 instead
+        # of 1) on some runs
+        batch_inserts_query = f"""
+            select count() as n
+            from system.query_log
+            where type = 'QueryFinish'
+              and query_kind = 'Insert'
+              and query like '%{MICROBATCH_TEST_MODEL}\\_\\_microbatch\\_tmp\\_%'
+            """
+        con.command('system flush logs')
+        batch_inserts_before = con.query_df(batch_inserts_query)['n'][0]
 
         run_dbt(
             [
@@ -133,16 +144,7 @@ class TestMicrobatch:
         )
 
         con.command('system flush logs')
-        batch_inserts = con.query_df(
-            f"""
-            select count() as n
-            from system.query_log
-            where type = 'QueryFinish'
-              and query_kind = 'Insert'
-              and event_time >= toDateTime('{run_started_at}')
-              and query like '%{MICROBATCH_TEST_MODEL}\\_\\_microbatch\\_tmp\\_%'
-            """
-        )['n'][0]
+        batch_inserts = con.query_df(batch_inserts_query)['n'][0] - batch_inserts_before
         assert batch_inserts == 1, (
             f'expected exactly one batch INSERT for a window that fits one batch, got {batch_inserts}'
         )
