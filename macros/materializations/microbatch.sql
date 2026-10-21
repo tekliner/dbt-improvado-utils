@@ -51,6 +51,10 @@
     {%- set debug_mode                          = config.get('debug_mode', default=false) -%}
     {%- set silence_mode                        = not config.get('silence_mode', default=false) -%}
 
+-- what to do with duplicate parts (same hash_of_all_files) found in tmp before the guard and in
+-- target after REPLACE: 'drop' keeps one copy (default), 'report' only logs them (BI-10065)
+    {%- set duplicate_parts_action              = config.get('duplicate_parts_action', default='drop') -%}
+
 -- logic ---------------------------------------------------------------------------------------------------------------
     {%- if not microbatch_settings -%}
         {%- do exceptions.raise_compiler_error(
@@ -286,8 +290,12 @@
         {{- diu.mcr_log_colored('Exchanging ' ~ tmp_relation ~ ' with ' ~ target_relation, silence_mode) -}}
         {{- diu.exchange_tables(tmp_relation, target_relation) -}}
     {%- else -%}
-    -- checking tmp table for duplicate parts before replacing and dropping if needed
-        {%- do diu.check_duplicate_parts(tmp_relation, silence_mode) -%}
+    -- checking tmp table for duplicate parts before replacing and dropping if needed.
+    -- With duplicate_parts_action = 'report' the copies stay: a target that already holds
+    -- duplicate parts (fct_product_domain_events, 2026-10-19) hands them to tmp through
+    -- copy_partition, and dropping them here would fail check_untouched_rows_match on every
+    -- run - the guard expects the old rows back exactly as they were (BI-10065)
+        {%- do diu.check_duplicate_parts(tmp_relation, silence_mode, action=duplicate_parts_action) -%}
 
     -- last guard before the swap: rows older than start_time were only copied, never rewritten,
     -- so tmp must hold exactly as many of them as target does
@@ -299,7 +307,7 @@
         {{- diu.insert_overwrite_partitions(target_relation, tmp_relation) -}}
 
     -- checking target table for duplicate parts after replacing and dropping if needed
-        {%- do diu.check_duplicate_parts(target_relation, silence_mode) -%}
+        {%- do diu.check_duplicate_parts(target_relation, silence_mode, action=duplicate_parts_action) -%}
     {%- endif -%}
 -- dropping tmp table after replacing or exchanging
     {%- do drop_relation(tmp_relation) -%}
@@ -855,8 +863,11 @@
     Returns:
         None
 #}
+    {#- schema.identifier instead of the bare relation: a run-operation (the pytest for
+        check_duplicate_parts) passes a plain {schema, identifier} dict, which api.Relation
+        rendering would turn into its Python repr -#}
     {%- call statement('drop_part') -%}
-        alter table {{ relation }} drop part '{{ part_name }}'
+        alter table {{ relation.schema }}.{{ relation.identifier }} drop part '{{ part_name }}'
     {%- endcall -%}
 {%- endmacro -%}
 
@@ -932,16 +943,25 @@
 {%- endmacro -%}
 
 
-{%- macro check_duplicate_parts(relation, silence_mode) -%}
+{%- macro check_duplicate_parts(relation, silence_mode, action='drop') -%}
 {#
-    Checks for duplicate parts (same hash) and deletes them, keeping only one copy
+    Checks for duplicate parts (same hash) and, depending on action, deletes them keeping only
+    one copy ('drop') or only reports them and leaves the relation as it is ('report').
     Arguments:
         relation(api.Relation):     The relation to check
         silence_mode(bool):         Should the log messages be silenced
+        action(string):             'drop' (default) or 'report' (BI-10065: a model whose target
+                                    already holds duplicate parts must keep its history as it is
+                                    until the duplicates are dealt with explicitly)
     Returns:
         None
 #}
     {%- set diu = dbt_improvado_utils -%}
+
+    {%- if action not in ('drop', 'report') -%}
+        {%- do exceptions.raise_compiler_error(
+                    "check_duplicate_parts: action must be 'drop' or 'report', got '" ~ action ~ "'") -%}
+    {%- endif -%}
 
     {%- set check_duplicates_query -%}
         select
@@ -981,14 +1001,21 @@
         {%- set part_names = fromjson(dup_group['part_names']) -%}
         {%- set parts_to_delete = part_names[1:] -%}
 
-        {{- diu.mcr_log_colored(
-                'Detected ' ~ (part_names | length) ~ ' duplicate parts in partition '~
-                dup_partition_id ~ ' with hash ' ~ dup_hash ~ ' - deleting duplicates',
-                silence_mode, color='red') -}}
+        {#- mcr_log_colored needs `this`, which a bare run-operation (the pytest for this macro) lacks -#}
+        {%- if this is defined -%}
+            {{- diu.mcr_log_colored(
+                    'Detected ' ~ (part_names | length) ~ ' duplicate parts in partition '~
+                    dup_partition_id ~ ' with hash ' ~ dup_hash ~ ' in ' ~ relation ~ ': ' ~
+                    (part_names | join(', ')) ~
+                    (' - deleting duplicates' if action == 'drop' else ' - kept (duplicate_parts_action = report)'),
+                    silence_mode, color='red') -}}
+        {%- endif -%}
 
-        {%- for part_name in parts_to_delete -%}
-            {%- do diu.drop_part(relation, part_name) -%}
-        {%- endfor -%}
+        {%- if action == 'drop' -%}
+            {%- for part_name in parts_to_delete -%}
+                {%- do diu.drop_part(relation, part_name) -%}
+            {%- endfor -%}
+        {%- endif -%}
 
     {%- endfor -%}
 
