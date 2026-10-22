@@ -458,19 +458,58 @@
 {#
     Gets the maximum value of timestamp_column in relation
     Arguments:
-        relation(string): Schema and table name
+        relation(api.Relation): The target relation
         timestamp_column(string): Column name
     Returns:
         The maximum value of timestamp_column in DateTime format
-#}
-    {%- set max_datetime -%}
-        select
-            toDateTime(max({{ timestamp_column }}))
-        from
-            {{ relation }}
-    {%- endset -%}
 
+    Reads only the newest non-empty partition instead of the whole table. Every microbatch
+    model partitions by toYYYYMM(output_datetime_column) (partition_by is required and parsed
+    for that), so the maximum of that column lives in the partition with the greatest
+    partition_id. A plain max() over the whole table is answered from _minmax_count_projection
+    only while no part carries a lightweight DELETE mask; after the first DELETE the same
+    max() reads every part on every run (BI-10046, Palantir Lisbon, 30 days:
+    fct_dataflow_run_events 5.5k calls / 101 TB, src_improvado_dataflow_run_events 5.5k / 85 TB).
+    Falls back to the whole-table max() when the newest partition has no live rows (all of
+    them deleted) or system.parts lists no partition at all.
+#}
     {%- if execute -%}
+        {%- set latest_partition_query -%}
+            select
+                max(partition_id)
+            from
+                system.parts
+            where
+                active
+                and rows > 0
+                and database = '{{ relation.schema }}'
+                and table = '{{ relation.identifier }}'
+        {%- endset -%}
+        {%- set latest_partition_id = run_query(latest_partition_query)[0][0] -%}
+
+        {%- if latest_partition_id -%}
+            {%- set latest_partition_max_datetime -%}
+                select
+                    toDateTime(max({{ timestamp_column }})),
+                    count()
+                from
+                    {{ relation }}
+                where
+                    _partition_id = '{{ latest_partition_id }}'
+            {%- endset -%}
+            {%- set latest_partition_max_datetime_row = run_query(latest_partition_max_datetime)[0] -%}
+
+            {%- if latest_partition_max_datetime_row[1] > 0 -%}
+                {{- return(latest_partition_max_datetime_row[0]) -}}
+            {%- endif -%}
+        {%- endif -%}
+
+        {%- set max_datetime -%}
+            select
+                toDateTime(max({{ timestamp_column }}))
+            from
+                {{ relation }}
+        {%- endset -%}
         {{- return(run_query(max_datetime)[0][0]) -}}
     {%- endif -%}
 {%- endmacro -%}

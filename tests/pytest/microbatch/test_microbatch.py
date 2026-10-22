@@ -153,6 +153,82 @@ class TestMicrobatch:
         expected_result = con.query_df(QUERY_COUNT_ROWS.format(table_name=MICROBATCH_INPUT_MODEL))
         assert expected_result['rows_count'][0] == actual_result['rows_count'][0]
 
+    def test_max_datetime_reads_latest_partition_and_falls_back(self, ch_client, setup_test_environment):
+        """
+        The previous-run max datetime must come from the newest non-empty partition only, not
+        from a whole-table max() (which turns into a full scan once a lightweight DELETE mask
+        exists). When every row of the newest partition is deleted, the macro must fall back
+        to the whole-table max() and the run must still refill the target.
+        """
+
+        con = ch_client
+        min_timestamp = setup_test_environment['min_timestamp']
+        materialization_start_date = min_timestamp.strftime("%Y-%m-%d")
+
+        self.execute_test(ch_client, {'materialization_start_date': materialization_start_date})
+
+        # the max() the macro issues against the target: one query pinned to a partition, or
+        # the whole-table fallback (no _partition_id predicate)
+        max_queries_query = f"""
+            select
+                countIf(query like '%\\_partition\\_id =%') as partition_pinned,
+                countIf(query not like '%\\_partition\\_id =%') as whole_table
+            from system.query_log
+            where type = 'QueryFinish'
+              and query_kind = 'Select'
+              and query like '%toDateTime(max(event_datetime))%'
+              and query like '%`default`.`{MICROBATCH_TEST_MODEL}`%'
+              and query not like '%query\\_log%'
+            """
+        incremental_run = [
+            'run',
+            '--select',
+            f'{MICROBATCH_TEST_MODEL}',
+            '--vars',
+            f"{{'materialization_start_date': '{materialization_start_date}', 'enabled': True}}",
+        ]
+
+        con.command('system flush logs')
+        before = con.query_df(max_queries_query).iloc[0]
+        run_dbt(incremental_run)
+        con.command('system flush logs')
+        after = con.query_df(max_queries_query).iloc[0]
+
+        assert after['partition_pinned'] - before['partition_pinned'] == 1, 'expected one partition-pinned max() query'
+        assert after['whole_table'] - before['whole_table'] == 0, 'whole-table max() must not run while the newest partition has rows'
+
+        # delete every row of the newest partition with a lightweight DELETE: system.parts still
+        # lists the partition with rows > 0, but the pinned max() sees nothing -> fallback
+        latest_partition = con.query_df(
+            f"""
+            select max(partition_id) as partition_id
+            from system.parts
+            where active and rows > 0 and database = 'default' and table = '{MICROBATCH_TEST_MODEL}'
+            """
+        )['partition_id'][0]
+        con.command(
+            f"delete from default.{MICROBATCH_TEST_MODEL} where toYYYYMM(event_datetime) = {latest_partition}"
+        )
+
+        before = after
+        run_dbt(incremental_run)
+        con.command('system flush logs')
+        after = con.query_df(max_queries_query).iloc[0]
+
+        assert after['partition_pinned'] - before['partition_pinned'] == 1
+        assert after['whole_table'] - before['whole_table'] == 1, 'expected the whole-table fallback after the newest partition was emptied'
+
+        actual_rows = con.query_df(QUERY_COUNT_ROWS.format(table_name=MICROBATCH_TEST_MODEL))['rows_count'][0]
+        expected_rows = con.query_df(QUERY_COUNT_ROWS.format(table_name=MICROBATCH_INPUT_MODEL))['rows_count'][0]
+        assert actual_rows == expected_rows, 'the emptied partition must be refilled'
+
+        # the input is a view over now(), so its max moves between reads: check that the
+        # target's max is back inside the partition that was emptied
+        actual_max = con.query_df(
+            QUERY_TIMESTAMP.format(table_name=MICROBATCH_TEST_MODEL, timestamp_column='event_datetime')
+        )['max_timestamp'][0]
+        assert int(actual_max.strftime('%Y%m')) == int(latest_partition), 'the emptied partition must hold rows again'
+
     def test_stale_tmp_relation_is_swept_and_not_double_counted(self, ch_client, setup_test_environment):
         """
         A crashed prior run can leave its invocation-scoped tmp table behind (each run now
