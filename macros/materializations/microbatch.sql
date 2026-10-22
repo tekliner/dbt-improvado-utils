@@ -51,8 +51,9 @@
     {%- set debug_mode                          = config.get('debug_mode', default=false) -%}
     {%- set silence_mode                        = not config.get('silence_mode', default=false) -%}
 
--- what to do with duplicate parts (same hash_of_all_files) found in tmp before the guard and in
--- target after REPLACE: 'drop' keeps one copy (default), 'report' only logs them (BI-10065)
+-- what to do with duplicate parts (same hash_of_all_files) found in target before the copy, in
+-- tmp before the guard and in target after REPLACE: 'drop' keeps one copy (default),
+-- 'report' only logs them (BI-10065)
     {%- set duplicate_parts_action              = config.get('duplicate_parts_action', default='drop') -%}
 
 -- logic ---------------------------------------------------------------------------------------------------------------
@@ -224,6 +225,17 @@
     {%- set partition_id = diu.get_partition_id(start_time, partition_by_format) -%}
 
     {%- if not full_refresh -%}
+    -- healing identical parts in target before they are copied (BI-10065). A server restart
+    -- inside old_parts_lifetime after a REPLACE PARTITION brings the replaced parts back as
+    -- active next to their replacements: byte-identical twins, the same rows twice. Copied into
+    -- tmp they used to make one of two things happen: check_duplicate_parts(tmp) dropped one
+    -- copy and check_untouched_rows_match refused every REPLACE from then on
+    -- (fct_product_domain_events stood still 2026-10-19 09:04 -> 10-21 14:47 UTC), or, with
+    -- duplicate_parts_action = 'report', the doubled rows were kept and flowed downstream.
+    -- Dropping the extra copies in target first keeps one of each, so target and tmp agree and
+    -- the guard has nothing to object to; with 'report' they are only logged, as before.
+        {%- do diu.check_duplicate_parts(target_relation, silence_mode, action=duplicate_parts_action) -%}
+
         {{- diu.mcr_log_colored(
                 'Copying partition "' ~ partition_id ~ '" from ' ~ target_relation ~ ' to ' ~ tmp_relation, silence_mode) -}}
         {%- do diu.copy_partition(target_relation, tmp_relation, partition_id) -%}
