@@ -51,6 +51,11 @@
     {%- set debug_mode                          = config.get('debug_mode', default=false) -%}
     {%- set silence_mode                        = not config.get('silence_mode', default=false) -%}
 
+-- what to do with duplicate parts (same hash_of_all_files) found in target before the copy, in
+-- tmp before the guard and in target after REPLACE: 'drop' keeps one copy (default),
+-- 'report' only logs them (BI-10065)
+    {%- set duplicate_parts_action              = config.get('duplicate_parts_action', default='drop') -%}
+
 -- logic ---------------------------------------------------------------------------------------------------------------
     {%- if not microbatch_settings -%}
         {%- do exceptions.raise_compiler_error(
@@ -167,14 +172,51 @@
 
     {{- diu.mcr_log_colored('Calculating interval parts', silence_mode) -}}
     {%- set parts_count = [(interval_range / batch_size) | round(0, 'ceil') | int, 2] | max -%}
-    {{- diu.mcr_log_colored('Interval parts count:\n\t' ~ parts_count, silence_mode) -}}
+
+    {#-
+        parts_count never drops below 2, so a run whose window fits one batch (every 5-minute
+        cronjob model: overwrite_size < batch_size) always gets a second batch that starts after
+        now. Its HAVING window can only match rows timestamped in the future, and on Palantir
+        Lisbon not one of ~90,000 such batches wrote a row in 30 days (2026-09-14..10-14, 32
+        models, all users) -- yet the inputs still run their full query. On src_improvado_order_run_events,
+        _legacy and _runs_billing the future batch costs 60-85% of the real one (the
+        mrt_order_run_events_v2 joins are built regardless of the window): ~0.25 core around the
+        clock across the five BI-10045 models. Batches starting after fixed_now are skipped; the
+        first batch is always kept, because the tmp partition already had rows >= start_time
+        deleted and must be refilled even if the target somehow holds future-dated rows.
+        materialization_end_date is left alone: a backfill ends where it ends.
+    -#}
+    {%- set batch_indexes = [] -%}
+    {%- for i in range(parts_count) -%}
+        {%- set interval_start = start_time + diu.get_unit_interval(value=i * batch_size, unit=time_unit_name) -%}
+        {%- if i == 0 or materialization_end_date or interval_start <= fixed_now -%}
+            {%- do batch_indexes.append(i) -%}
+        {%- endif -%}
+    {%- endfor -%}
+
+    {{- diu.mcr_log_colored(
+            'Interval parts count:\n\t' ~ parts_count ~
+            ((' (' ~ (parts_count - batch_indexes | length) ~ ' starting after ' ~ fixed_now ~ ' skipped)')
+                if batch_indexes | length < parts_count else ''), silence_mode) -}}
 
 -- temporary table creation
+-- the tmp identifier is scoped to this dbt invocation: two overlapping runs of the same
+-- model (e.g. a retried CronJob execution) must never write into the same physical tmp
+-- table, since that race is invisible to check_duplicate_parts (each run's INSERT produces
+-- its own MergeTree parts with a different hash, even when the resulting rows are identical)
+    {%- set tmp_identifier = target_relation.identifier ~ '__microbatch_tmp_' ~ (invocation_id | replace('-', '')) -%}
+
+    {%- do diu.cleanup_stale_microbatch_tmp_relations(
+                schema=target_schema,
+                base_identifier=target_relation.identifier,
+                keep_identifier=tmp_identifier,
+                silence_mode=silence_mode) -%}
+
     {%- set tmp_relation_exists, tmp_relation =
                 get_or_create_relation(
                     database=none,
                     schema=target_schema,
-                    identifier=target_relation.identifier ~ '__microbatch_tmp',
+                    identifier=tmp_identifier,
                     type='table') -%}
 
     {%- do drop_relation(tmp_relation) -%}
@@ -183,6 +225,17 @@
     {%- set partition_id = diu.get_partition_id(start_time, partition_by_format) -%}
 
     {%- if not full_refresh -%}
+    -- healing identical parts in target before they are copied (BI-10065). A server restart
+    -- inside old_parts_lifetime after a REPLACE PARTITION brings the replaced parts back as
+    -- active next to their replacements: byte-identical twins, the same rows twice. Copied into
+    -- tmp they used to make one of two things happen: check_duplicate_parts(tmp) dropped one
+    -- copy and check_untouched_rows_match refused every REPLACE from then on
+    -- (fct_product_domain_events stood still 2026-10-19 09:04 -> 10-21 14:47 UTC), or, with
+    -- duplicate_parts_action = 'report', the doubled rows were kept and flowed downstream.
+    -- Dropping the extra copies in target first keeps one of each, so target and tmp agree and
+    -- the guard has nothing to object to; with 'report' they are only logged, as before.
+        {%- do diu.check_duplicate_parts(target_relation, silence_mode, action=duplicate_parts_action) -%}
+
         {{- diu.mcr_log_colored(
                 'Copying partition "' ~ partition_id ~ '" from ' ~ target_relation ~ ' to ' ~ tmp_relation, silence_mode) -}}
         {%- do diu.copy_partition(target_relation, tmp_relation, partition_id) -%}
@@ -200,7 +253,7 @@
     {%- endif -%}
 
 -- insert queries generation
-    {%- for i in range(parts_count) -%}
+    {%- for i in batch_indexes -%}
     -- inserting intervals list calculation
         {%- set where_conditions, having_conditions =
                     diu.get_intervals_list(
@@ -249,15 +302,24 @@
         {{- diu.mcr_log_colored('Exchanging ' ~ tmp_relation ~ ' with ' ~ target_relation, silence_mode) -}}
         {{- diu.exchange_tables(tmp_relation, target_relation) -}}
     {%- else -%}
-    -- checking tmp table for duplicate parts before replacing and dropping if needed
-        {%- do diu.check_duplicate_parts(tmp_relation, silence_mode) -%}
+    -- checking tmp table for duplicate parts before replacing and dropping if needed.
+    -- With duplicate_parts_action = 'report' the copies stay: a target that already holds
+    -- duplicate parts (fct_product_domain_events, 2026-10-19) hands them to tmp through
+    -- copy_partition, and dropping them here would fail check_untouched_rows_match on every
+    -- run - the guard expects the old rows back exactly as they were (BI-10065)
+        {%- do diu.check_duplicate_parts(tmp_relation, silence_mode, action=duplicate_parts_action) -%}
+
+    -- last guard before the swap: rows older than start_time were only copied, never rewritten,
+    -- so tmp must hold exactly as many of them as target does
+        {%- do diu.check_untouched_rows_match(
+                    target_relation, tmp_relation, partition_id, output_datetime_column, start_time, silence_mode) -%}
 
     -- replacing partitions
         {{- diu.mcr_log_colored('Replacing partitions from ' ~ tmp_relation ~ ' to ' ~ target_relation, silence_mode) -}}
         {{- diu.insert_overwrite_partitions(target_relation, tmp_relation) -}}
 
     -- checking target table for duplicate parts after replacing and dropping if needed
-        {%- do diu.check_duplicate_parts(target_relation, silence_mode) -%}
+        {%- do diu.check_duplicate_parts(target_relation, silence_mode, action=duplicate_parts_action) -%}
     {%- endif -%}
 -- dropping tmp table after replacing or exchanging
     {%- do drop_relation(tmp_relation) -%}
@@ -396,19 +458,58 @@
 {#
     Gets the maximum value of timestamp_column in relation
     Arguments:
-        relation(string): Schema and table name
+        relation(api.Relation): The target relation
         timestamp_column(string): Column name
     Returns:
         The maximum value of timestamp_column in DateTime format
-#}
-    {%- set max_datetime -%}
-        select
-            toDateTime(max({{ timestamp_column }}))
-        from
-            {{ relation }}
-    {%- endset -%}
 
+    Reads only the newest non-empty partition instead of the whole table. Every microbatch
+    model partitions by toYYYYMM(output_datetime_column) (partition_by is required and parsed
+    for that), so the maximum of that column lives in the partition with the greatest
+    partition_id. A plain max() over the whole table is answered from _minmax_count_projection
+    only while no part carries a lightweight DELETE mask; after the first DELETE the same
+    max() reads every part on every run (BI-10046, Palantir Lisbon, 30 days:
+    fct_dataflow_run_events 5.5k calls / 101 TB, src_improvado_dataflow_run_events 5.5k / 85 TB).
+    Falls back to the whole-table max() when the newest partition has no live rows (all of
+    them deleted) or system.parts lists no partition at all.
+#}
     {%- if execute -%}
+        {%- set latest_partition_query -%}
+            select
+                max(partition_id)
+            from
+                system.parts
+            where
+                active
+                and rows > 0
+                and database = '{{ relation.schema }}'
+                and table = '{{ relation.identifier }}'
+        {%- endset -%}
+        {%- set latest_partition_id = run_query(latest_partition_query)[0][0] -%}
+
+        {%- if latest_partition_id -%}
+            {%- set latest_partition_max_datetime -%}
+                select
+                    toDateTime(max({{ timestamp_column }})),
+                    count()
+                from
+                    {{ relation }}
+                where
+                    _partition_id = '{{ latest_partition_id }}'
+            {%- endset -%}
+            {%- set latest_partition_max_datetime_row = run_query(latest_partition_max_datetime)[0] -%}
+
+            {%- if latest_partition_max_datetime_row[1] > 0 -%}
+                {{- return(latest_partition_max_datetime_row[0]) -}}
+            {%- endif -%}
+        {%- endif -%}
+
+        {%- set max_datetime -%}
+            select
+                toDateTime(max({{ timestamp_column }}))
+            from
+                {{ relation }}
+        {%- endset -%}
         {{- return(run_query(max_datetime)[0][0]) -}}
     {%- endif -%}
 {%- endmacro -%}
@@ -695,6 +796,84 @@
     {%- endif -%}
 {%- endmacro -%}
 
+{%- macro check_untouched_rows_match(existing_relation, intermediate_relation, partition_id, output_datetime_column, start_time, silence_mode) -%}
+{#
+    Last guard before REPLACE PARTITION. The run rewrites only rows at or after start_time; rows
+    older than that reach intermediate_relation by copy_partition alone, so both relations must
+    hold the same number of them. check_partition_row_count_match cannot see an extra copy that
+    lands after it has run, and check_duplicate_parts compares parts by hash_of_all_files, which
+    stops matching once a merge or the DELETE mutation regroups one copy differently from the
+    other. On 2026-10-07 that left a doubled slice in fct_order_run_events and
+    fct_dataflow_run_events and a doubled month in int_order_run_events_incremental_billing_calc.
+    Counting rows is independent of how the parts are laid out.
+    Arguments:
+        existing_relation(api.Relation):       The relation the partition was copied from
+        intermediate_relation(api.Relation):   The relation about to replace that partition
+        partition_id(string):                  The partition id that was copied
+        output_datetime_column(string):        The model's output datetime column
+        start_time(datetime):                  Rows at or after it are rewritten by this run
+        silence_mode(bool):                    Should the log messages be silenced
+    Returns:
+        None (raises a compiler error on mismatch)
+#}
+    {%- set diu = dbt_improvado_utils -%}
+
+    {#-
+        Untouched rows = all rows of the partition (system.parts, metadata only) minus the rows
+        at or after start_time. Counting the tail instead of the untouched rows themselves keeps
+        the scan to the last overwrite window: on Lisbon Palantir (2026-10-13) the direct count
+        read the whole partition - 120M rows, 7-9 s per relation on fct_order_run_events and
+        fct_dataflow_run_events - while the tail count reads ~4M rows in about 1 s and gives the
+        same number.
+    -#}
+    {%- set row_counts_query -%}
+        select
+            (select sum(rows) from system.parts
+             where database = '{{ existing_relation.schema }}'
+               and table = '{{ existing_relation.identifier }}'
+               and partition_id = '{{ partition_id }}'
+               and active)
+            - (select count() from {{ existing_relation.schema }}.{{ existing_relation.identifier }}
+               where _partition_id = '{{ partition_id }}'
+                 and {{ output_datetime_column }} >= toDateTime('{{ start_time }}')) as target_rows,
+            (select sum(rows) from system.parts
+             where database = '{{ intermediate_relation.schema }}'
+               and table = '{{ intermediate_relation.identifier }}'
+               and partition_id = '{{ partition_id }}'
+               and active)
+            - (select count() from {{ intermediate_relation.schema }}.{{ intermediate_relation.identifier }}
+               where _partition_id = '{{ partition_id }}'
+                 and {{ output_datetime_column }} >= toDateTime('{{ start_time }}')) as tmp_rows
+    {%- endset -%}
+
+    {%- if execute -%}
+        {%- set result = run_query(row_counts_query).rows[0] -%}
+        {%- set target_rows = result['target_rows'] or 0 -%}
+        {%- set tmp_rows = result['tmp_rows'] or 0 -%}
+
+        {#- mcr_log_colored needs `this`, which a bare run-operation (the pytest for this macro) lacks -#}
+        {%- if this is defined -%}
+            {{- diu.mcr_log_colored(
+                    'Untouched rows guard for partition "' ~ partition_id ~ '" before ' ~ start_time ~
+                    ':\n\ttarget: ' ~ target_rows ~ '\n\ttmp: ' ~ tmp_rows, silence_mode) -}}
+        {%- endif -%}
+
+        {%- if target_rows != tmp_rows -%}
+            {%- set mismatch_message =
+                    'Untouched rows mismatch on partition "' ~ partition_id ~ '" before ' ~ start_time ~ ':\n' ~
+                    '\ttarget (' ~ existing_relation.schema ~ '.' ~ existing_relation.identifier ~ '): ' ~ target_rows ~ ' rows\n' ~
+                    '\ttmp (' ~ intermediate_relation.schema ~ '.' ~ intermediate_relation.identifier ~ '): ' ~ tmp_rows ~ ' rows\n' ~
+                    'This run only rewrites rows at or after start_time, so the older rows in tmp ' ~
+                    'were duplicated or lost on the way.\n' ~
+                    'Aborting before REPLACE PARTITION; target is left as it was.' -%}
+            {%- if this is defined -%}
+                {{- diu.mcr_log_colored(mismatch_message, true, color='red') -}}
+            {%- endif -%}
+            {%- do exceptions.raise_compiler_error(mismatch_message) -%}
+        {%- endif -%}
+    {%- endif -%}
+{%- endmacro -%}
+
 {%- macro get_partition_id(datetime_object, partition_by_format) -%}
 {#
     Creates partition id by the given datetime object
@@ -735,8 +914,11 @@
     Returns:
         None
 #}
+    {#- schema.identifier instead of the bare relation: a run-operation (the pytest for
+        check_duplicate_parts) passes a plain {schema, identifier} dict, which api.Relation
+        rendering would turn into its Python repr -#}
     {%- call statement('drop_part') -%}
-        alter table {{ relation }} drop part '{{ part_name }}'
+        alter table {{ relation.schema }}.{{ relation.identifier }} drop part '{{ part_name }}'
     {%- endcall -%}
 {%- endmacro -%}
 
@@ -768,16 +950,69 @@
     {%- endfor -%}
 {%- endmacro -%}
 
-{%- macro check_duplicate_parts(relation, silence_mode) -%}
+{%- macro cleanup_stale_microbatch_tmp_relations(schema, base_identifier, keep_identifier, silence_mode) -%}
 {#
-    Checks for duplicate parts (same hash) and deletes them, keeping only one copy
+    Drops leftover per-invocation tmp tables from previous runs of this model that crashed
+    or were killed before reaching their own drop_relation cleanup at the end of the
+    materialization. Runs before this invocation creates its own tmp table so orphaned tmp
+    tables don't accumulate now that each run's tmp identifier is invocation-scoped.
     Arguments:
-        relation(api.Relation):     The relation to check
-        silence_mode(bool):         Should the log messages be silenced
+        schema(string):           The schema to search in
+        base_identifier(string):  The target model's identifier (without the tmp suffix)
+        keep_identifier(string):  This invocation's own tmp identifier - never drop it
+        silence_mode(bool):       Should the log messages be silenced
     Returns:
         None
 #}
     {%- set diu = dbt_improvado_utils -%}
+
+    {%- set stale_tmp_tables_query -%}
+        select name
+        from system.tables
+        where database = '{{ schema }}'
+          and name like '{{ base_identifier }}\_\_microbatch\_tmp\_%'
+          and name != '{{ keep_identifier }}'
+    {%- endset -%}
+
+    {%- if execute -%}
+        {%- set stale_tables = run_query(stale_tmp_tables_query).rows -%}
+
+        {%- for row in stale_tables -%}
+            {{- diu.mcr_log_colored(
+                    'Dropping stale microbatch tmp table left over from a previous run: ' ~ row['name'],
+                    silence_mode, color='red') -}}
+
+            {%- set _, stale_relation =
+                        get_or_create_relation(
+                            database=none,
+                            schema=schema,
+                            identifier=row['name'],
+                            type='table') -%}
+            {%- do drop_relation(stale_relation) -%}
+        {%- endfor -%}
+    {%- endif -%}
+{%- endmacro -%}
+
+
+{%- macro check_duplicate_parts(relation, silence_mode, action='drop') -%}
+{#
+    Checks for duplicate parts (same hash) and, depending on action, deletes them keeping only
+    one copy ('drop') or only reports them and leaves the relation as it is ('report').
+    Arguments:
+        relation(api.Relation):     The relation to check
+        silence_mode(bool):         Should the log messages be silenced
+        action(string):             'drop' (default) or 'report' (BI-10065: a model whose target
+                                    already holds duplicate parts must keep its history as it is
+                                    until the duplicates are dealt with explicitly)
+    Returns:
+        None
+#}
+    {%- set diu = dbt_improvado_utils -%}
+
+    {%- if action not in ('drop', 'report') -%}
+        {%- do exceptions.raise_compiler_error(
+                    "check_duplicate_parts: action must be 'drop' or 'report', got '" ~ action ~ "'") -%}
+    {%- endif -%}
 
     {%- set check_duplicates_query -%}
         select
@@ -790,6 +1025,13 @@
             database = '{{ relation.schema }}'
             and table = '{{ relation.identifier }}'
             and active = 1
+            -- AI-1668: ignore empty parts. Since ClickHouse 26.3 (PR #91574, dedicated cleanup thread)
+            -- a DELETE mutation that removes every row of a part leaves a 0-row part active for
+            -- 30s-5min instead of ~1s. All empty parts share one hash_of_all_files, so they look like
+            -- duplicates here; DROP PART on them races the cleanup thread and fails with code 232
+            -- (NO_SUCH_DATA_PART). Empty parts hold no rows, so skipping them cannot lose or
+            -- duplicate data; ClickHouse removes them itself.
+            and rows > 0
         group by
             partition_id,
             hash_of_all_files
@@ -810,14 +1052,21 @@
         {%- set part_names = fromjson(dup_group['part_names']) -%}
         {%- set parts_to_delete = part_names[1:] -%}
 
-        {{- diu.mcr_log_colored(
-                'Detected ' ~ (part_names | length) ~ ' duplicate parts in partition '~
-                dup_partition_id ~ ' with hash ' ~ dup_hash ~ ' - deleting duplicates',
-                silence_mode, color='red') -}}
+        {#- mcr_log_colored needs `this`, which a bare run-operation (the pytest for this macro) lacks -#}
+        {%- if this is defined -%}
+            {{- diu.mcr_log_colored(
+                    'Detected ' ~ (part_names | length) ~ ' duplicate parts in partition '~
+                    dup_partition_id ~ ' with hash ' ~ dup_hash ~ ' in ' ~ relation ~ ': ' ~
+                    (part_names | join(', ')) ~
+                    (' - deleting duplicates' if action == 'drop' else ' - kept (duplicate_parts_action = report)'),
+                    silence_mode, color='red') -}}
+        {%- endif -%}
 
-        {%- for part_name in parts_to_delete -%}
-            {%- do diu.drop_part(relation, part_name) -%}
-        {%- endfor -%}
+        {%- if action == 'drop' -%}
+            {%- for part_name in parts_to_delete -%}
+                {%- do diu.drop_part(relation, part_name) -%}
+            {%- endfor -%}
+        {%- endif -%}
 
     {%- endfor -%}
 
