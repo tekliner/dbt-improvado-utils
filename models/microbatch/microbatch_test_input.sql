@@ -1,6 +1,7 @@
 {{
   config(
-    enabled = var('enabled', false)
+    enabled = var('enabled', false),
+    materialized = 'table'
     )
 }}
 

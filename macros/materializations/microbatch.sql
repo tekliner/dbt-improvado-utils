@@ -1102,7 +1102,7 @@
 {%- macro partition_rows_relation(schema) -%}
 {#
     The table that keeps, per model and partition, the row count the last run left behind
-    (BI-10065). One per schema, next to the models it describes; created on first use.
+    (BI-10065). One per schema, next to the models it describes; created on first use only.
     Arguments:
         schema(string):     The schema of the model
     Returns:
@@ -1110,7 +1110,9 @@
 #}
     {%- set identifier = var('microbatch_partition_rows_table', '_microbatch_partition_rows') -%}
     {%- set relation = '`' ~ schema ~ '`.`' ~ identifier ~ '`' -%}
-    {%- if execute -%}
+    {#- checked first: in a Replicated database (improvado_models) every CREATE, even one that
+        finds the table, would go through the DDL queue on every run of every model -#}
+    {%- if execute and adapter.get_relation(database=none, schema=schema, identifier=identifier) is none -%}
         {%- call statement('create_partition_rows_table') -%}
             create table if not exists {{ relation }}
             (
