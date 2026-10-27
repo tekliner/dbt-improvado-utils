@@ -1155,7 +1155,11 @@
               and table = '{{ source.identifier }}'
               and active
         {%- endset -%}
-        {%- set partition_ids = run_query(partitions_query).columns[0].values() | list -%}
+        {#- read by rows: an empty result comes back without columns (an empty tmp or target) -#}
+        {%- set partition_ids = [] -%}
+        {%- for row in run_query(partitions_query).rows -%}
+            {%- do partition_ids.append(row[0]) -%}
+        {%- endfor -%}
 
         {%- if partition_ids -%}
             {#- an empty partition has no active parts left: it is recorded with 0 rows -#}

@@ -560,6 +560,29 @@ class TestMicrobatch:
     def _rows(self, con):
         return con.query_df(QUERY_COUNT_ROWS.format(table_name=MICROBATCH_TEST_MODEL))['rows_count'][0]
 
+    def test_empty_model_passes(self, ch_client, setup_test_environment):
+        """
+        A model with no rows at all (Tokyo: fct_les_raw_export_s3_uploads, 2026-10-27) leaves
+        nothing to record: the empty partition list must not fail the run, neither after the
+        exchange of a full refresh nor after an incremental run with an empty tmp.
+        """
+
+        con = ch_client
+        start = setup_test_environment['min_timestamp'].strftime("%Y-%m-%d")
+        run_dbt(
+            [
+                'run',
+                '--select',
+                f'{MICROBATCH_TEST_MODEL}',
+                '--vars',
+                f"{{'materialization_start_date': '{start}', 'enabled': True, 'empty_input': True}}",
+                '--full-refresh',
+            ]
+        )
+        assert self._rows(con) == 0
+        self._run(start, empty_input=True)
+        assert self._rows(con) == 0
+
     def test_full_refresh_records_partition_rows(self, ch_client, setup_test_environment):
         """
         A full refresh records every partition of the new target with its row count, so the next
