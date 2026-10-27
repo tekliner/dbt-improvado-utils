@@ -542,3 +542,121 @@ class TestMicrobatch:
         }
 
         self.execute_test(ch_client, test_params)
+
+    # BI-10065: partition rows baseline -----------------------------------------------------------
+    BASELINE_TABLE = '_microbatch_partition_rows'
+
+    def _copied_partition(self, con):
+        """The partition the next incremental run copies: the one holding max(event_datetime) - overwrite_size"""
+        return con.query_df(
+            f"select toString(toYYYYMM(max(event_datetime) - interval 12 hour)) as p "
+            f"from default.{MICROBATCH_TEST_MODEL}"
+        )['p'][0]
+
+    def _run(self, materialization_start_date, expect_pass=True, **extra_vars):
+        dbt_vars = {'materialization_start_date': materialization_start_date, 'enabled': True, **extra_vars}
+        run_dbt(['run', '--select', f'{MICROBATCH_TEST_MODEL}', '--vars', f'{dbt_vars}'], expect_pass=expect_pass)
+
+    def _rows(self, con):
+        return con.query_df(QUERY_COUNT_ROWS.format(table_name=MICROBATCH_TEST_MODEL))['rows_count'][0]
+
+    def test_full_refresh_records_partition_rows(self, ch_client, setup_test_environment):
+        """
+        A full refresh records every partition of the new target with its row count, so the next
+        run has a baseline for whichever partition it copies.
+        """
+
+        con = ch_client
+        con.command(f'drop table if exists default.{self.BASELINE_TABLE}')
+        start = setup_test_environment['min_timestamp'].strftime("%Y-%m-%d")
+        self.execute_test(ch_client, {'materialization_start_date': start})
+
+        diff = con.query_df(
+            f"select count() as n from ("
+            f"  select partition_id, sum(rows) as rows from system.parts"
+            f"  where database = 'default' and table = '{MICROBATCH_TEST_MODEL}' and active group by partition_id"
+            f") as p full outer join ("
+            f"  select partition_id, argMax(rows, recorded_at) as rows from default.{self.BASELINE_TABLE}"
+            f"  where table = '{MICROBATCH_TEST_MODEL}' group by partition_id"
+            f") as b using partition_id where p.rows != b.rows or p.partition_id = '' or b.partition_id = ''"
+            f" settings join_use_nulls = 0"
+        )['n'][0]
+        assert diff == 0, 'baseline must hold every partition with its row count'
+
+    def test_partition_rows_baseline_catches_rows_doubled_inside_parts(self, ch_client, setup_test_environment):
+        """
+        BI-10065, 2026-10-27: after a ClickHouse restart fct_dataflow_run_events held an hour of rows
+        twice inside one merged part. No identical parts to heal, and both row count guards passed,
+        because tmp is a copy of target and inherits the extra rows. Here a second set of old rows is
+        inserted as a part of its own: with 'fail' the run must stop and leave target as it was,
+        with 'warn' it must go on.
+        """
+
+        con = ch_client
+        start = setup_test_environment['min_timestamp'].strftime("%Y-%m-%d")
+        self.execute_test(ch_client, {'materialization_start_date': start})
+        self._run(start, partition_rows_baseline_action='fail')  # a clean incremental run passes
+
+        partition_id = self._copied_partition(con)
+        old_rows_filter = (
+            f"_partition_id = '{partition_id}' and event_datetime < "
+            f"(select max(event_datetime) - interval 13 hour from default.{MICROBATCH_TEST_MODEL})"
+        )
+        con.command(
+            f"insert into default.{MICROBATCH_TEST_MODEL} "
+            f"select * from default.{MICROBATCH_TEST_MODEL} where {old_rows_filter} limit 50"
+        )
+        doubled = self._rows(con)
+        input_rows = con.query_df(QUERY_COUNT_ROWS.format(table_name=MICROBATCH_INPUT_MODEL))['rows_count'][0]
+        assert doubled > input_rows, 'the setup did not double any old rows'
+
+        self._run(start, expect_pass=False, partition_rows_baseline_action='fail')
+        assert self._rows(con) == doubled, "'fail' must leave target as it was"
+
+        self._run(start, partition_rows_baseline_action='warn')
+        assert self._rows(con) == doubled, "'warn' goes on; the doubled old rows stay"
+
+    def test_partition_rows_baseline_reset_after_manual_change(self, ch_client, setup_test_environment):
+        """
+        A deliberate manual change (here a DELETE of old rows) trips the check on the next run;
+        microbatch_partition_rows_reset lets one run through and records the new count, after which
+        the check passes again without the var.
+        """
+
+        con = ch_client
+        start = setup_test_environment['min_timestamp'].strftime("%Y-%m-%d")
+        self.execute_test(ch_client, {'materialization_start_date': start})
+
+        partition_id = self._copied_partition(con)
+        before = self._rows(con)
+        # the oldest rows of the partition: always below the rewritten window, whatever the input data
+        con.command(
+            f"alter table default.{MICROBATCH_TEST_MODEL} delete where _partition_id = '{partition_id}' "
+            f"and event_datetime = (select min(event_datetime) from default.{MICROBATCH_TEST_MODEL} "
+            f"where _partition_id = '{partition_id}') settings mutations_sync = 2"
+        )
+        assert self._rows(con) < before, 'the setup did not delete any old rows'
+
+        self._run(start, expect_pass=False, partition_rows_baseline_action='fail')
+        self._run(start, partition_rows_baseline_action='fail',
+                  microbatch_partition_rows_reset=[MICROBATCH_TEST_MODEL])
+        self._run(start, partition_rows_baseline_action='fail')
+
+    def test_partition_rows_baseline_missing_passes(self, ch_client, setup_test_environment):
+        """
+        No baseline for the partition (first run after the upgrade, a new month): the run passes
+        and leaves one behind.
+        """
+
+        con = ch_client
+        start = setup_test_environment['min_timestamp'].strftime("%Y-%m-%d")
+        self.execute_test(ch_client, {'materialization_start_date': start})
+        con.command(f'drop table if exists default.{self.BASELINE_TABLE}')
+
+        self._run(start, partition_rows_baseline_action='fail')
+
+        recorded = con.query_df(
+            f"select count() as n from default.{self.BASELINE_TABLE} "
+            f"where table = '{MICROBATCH_TEST_MODEL}' and partition_id = '{self._copied_partition(con)}'"
+        )['n'][0]
+        assert recorded > 0, 'the run must record the partition it replaced'
