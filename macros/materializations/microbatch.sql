@@ -56,6 +56,15 @@
 -- 'report' only logs them (BI-10065)
     {%- set duplicate_parts_action              = config.get('duplicate_parts_action', default='drop') -%}
 
+-- what to do when a partition no longer holds the rows the previous run left in it (BI-10065):
+-- 'warn' logs it (default), 'fail' stops the run before the copy, 'off' skips the check
+    {%- set partition_rows_baseline_action      = config.get('partition_rows_baseline_action', default='warn') -%}
+    {%- if partition_rows_baseline_action not in ('warn', 'fail', 'off') -%}
+        {%- do exceptions.raise_compiler_error(
+                    "partition_rows_baseline_action must be 'warn', 'fail' or 'off', got '" ~
+                    partition_rows_baseline_action ~ "'") -%}
+    {%- endif -%}
+
 -- logic ---------------------------------------------------------------------------------------------------------------
     {%- if not microbatch_settings -%}
         {%- do exceptions.raise_compiler_error(
@@ -236,6 +245,17 @@
     -- the guard has nothing to object to; with 'report' they are only logged, as before.
         {%- do diu.check_duplicate_parts(target_relation, silence_mode, action=duplicate_parts_action) -%}
 
+    -- comparing the partition with what the previous run left in it (BI-10065). Only this model
+    -- writes into target, so the row count must not change between runs. Rows doubled inside a
+    -- merged part after a restart (fct_dataflow_run_events, 2026-10-27) are invisible to
+    -- check_duplicate_parts and to both row count guards below, since tmp is a copy of target
+    -- and inherits them; this is the one check that sees them. It runs after the healing above,
+    -- so only what the healing could not undo is reported.
+        {%- if partition_rows_baseline_action != 'off' -%}
+            {%- do diu.check_partition_rows_baseline(
+                        target_relation, partition_id, partition_rows_baseline_action, silence_mode) -%}
+        {%- endif -%}
+
         {{- diu.mcr_log_colored(
                 'Copying partition "' ~ partition_id ~ '" from ' ~ target_relation ~ ' to ' ~ tmp_relation, silence_mode) -}}
         {%- do diu.copy_partition(target_relation, tmp_relation, partition_id) -%}
@@ -301,6 +321,9 @@
     -- exchanging tmp table and target table
         {{- diu.mcr_log_colored('Exchanging ' ~ tmp_relation ~ ' with ' ~ target_relation, silence_mode) -}}
         {{- diu.exchange_tables(tmp_relation, target_relation) -}}
+
+    -- every partition of the new target is the baseline for the next run
+        {%- do diu.record_partition_rows(target_relation, none) -%}
     {%- else -%}
     -- checking tmp table for duplicate parts before replacing and dropping if needed.
     -- With duplicate_parts_action = 'report' the copies stay: a target that already holds
@@ -320,6 +343,9 @@
 
     -- checking target table for duplicate parts after replacing and dropping if needed
         {%- do diu.check_duplicate_parts(target_relation, silence_mode, action=duplicate_parts_action) -%}
+
+    -- the replaced partitions as they are now are the baseline for the next run
+        {%- do diu.record_partition_rows(target_relation, tmp_relation) -%}
     {%- endif -%}
 -- dropping tmp table after replacing or exchanging
     {%- do drop_relation(tmp_relation) -%}
@@ -1070,4 +1096,194 @@
 
     {%- endfor -%}
 
+{%- endmacro -%}
+
+
+{%- macro partition_rows_relation(schema) -%}
+{#
+    The table that keeps, per model and partition, the row count the last run left behind
+    (BI-10065). One per schema, next to the models it describes; created on first use.
+    Arguments:
+        schema(string):     The schema of the model
+    Returns:
+        string: `schema`.`table`
+#}
+    {%- set identifier = var('microbatch_partition_rows_table', '_microbatch_partition_rows') -%}
+    {%- set relation = '`' ~ schema ~ '`.`' ~ identifier ~ '`' -%}
+    {%- if execute -%}
+        {%- call statement('create_partition_rows_table') -%}
+            create table if not exists {{ relation }}
+            (
+                table           String,
+                partition_id    String,
+                rows            UInt64,
+                invocation_id   String,
+                recorded_at     DateTime64(3)
+            )
+            engine = ReplacingMergeTree(recorded_at)
+            order by (table, partition_id)
+        {%- endcall -%}
+    {%- endif -%}
+    {{- return(relation) -}}
+{%- endmacro -%}
+
+
+{%- macro record_partition_rows(relation, partitions_relation) -%}
+{#
+    Stores the current row count of the given partitions of relation as the baseline that
+    check_partition_rows_baseline compares the next run against (BI-10065).
+    Arguments:
+        relation(api.Relation):             The model relation, after REPLACE PARTITION or exchange
+        partitions_relation(api.Relation):  The relation whose active partitions were replaced
+                                            (the tmp relation); none records every partition
+                                            of relation
+    Returns:
+        None
+#}
+    {%- set diu = dbt_improvado_utils -%}
+    {%- if execute -%}
+        {%- set baseline_relation = diu.partition_rows_relation(relation.schema) -%}
+        {%- set source = partitions_relation if partitions_relation is not none else relation -%}
+        {#- the partition list is read first and inlined, so the INSERT below never names the tmp
+            relation: query_log searches for '<model>__microbatch_tmp_' inserts count batches only -#}
+        {%- set partitions_query -%}
+            select distinct partition_id
+            from system.parts
+            where database = '{{ source.schema }}'
+              and table = '{{ source.identifier }}'
+              and active
+        {%- endset -%}
+        {%- set partition_ids = run_query(partitions_query).columns[0].values() | list -%}
+
+        {%- if partition_ids -%}
+            {#- an empty partition has no active parts left: it is recorded with 0 rows -#}
+            {%- call statement('record_partition_rows') -%}
+                insert into {{ baseline_relation }} (table, partition_id, rows, invocation_id, recorded_at)
+                select
+                    '{{ relation.identifier }}',
+                    p.partition_id,
+                    coalesce(r.rows, 0),
+                    '{{ invocation_id }}',
+                    now64(3)
+                from
+                    (
+                        select arrayJoin([{%- for partition_id in partition_ids -%}
+                            '{{ partition_id }}'{{ ', ' if not loop.last }}
+                        {%- endfor -%}]) as partition_id
+                    ) as p
+                    left join
+                    (
+                        select partition_id, sum(rows) as rows
+                        from system.parts
+                        where database = '{{ relation.schema }}'
+                          and table = '{{ relation.identifier }}'
+                          and active
+                        group by partition_id
+                    ) as r
+                    on p.partition_id = r.partition_id
+                settings join_use_nulls = 1
+            {%- endcall -%}
+        {%- endif -%}
+    {%- endif -%}
+{%- endmacro -%}
+
+
+{%- macro check_partition_rows_baseline(relation, partition_id, action, silence_mode) -%}
+{#
+    Compares the row count of a partition with the one the previous run recorded right after its
+    REPLACE PARTITION (BI-10065). Between two runs nothing but the model itself writes into it, so
+    a different count means rows came or went behind its back: replaced parts brought back by a
+    server restart (more rows), or a manual DELETE/INSERT. No baseline yet (first run after the
+    upgrade, a new month, a new model) passes. After a deliberate manual change, pass the model
+    name in var microbatch_partition_rows_reset (or true for every model) for one run: the check
+    is skipped and the new count is recorded after the REPLACE.
+    Arguments:
+        relation(api.Relation):     The model relation (target)
+        partition_id(string):       The partition the run is about to copy
+        action(string):             'warn' logs a mismatch, 'fail' raises it
+        silence_mode(bool):         Should the log messages be silenced
+    Returns:
+        None (raises a compiler error on mismatch with action = 'fail')
+#}
+    {%- set diu = dbt_improvado_utils -%}
+    {%- set reset = var('microbatch_partition_rows_reset', []) -%}
+    {%- set is_reset = reset is sameas true or (reset is iterable and reset is not string and relation.identifier in reset) -%}
+
+    {%- if execute -%}
+        {%- if is_reset -%}
+            {%- if this is defined -%}
+                {{- diu.mcr_log_colored(
+                        'Partition rows baseline for "' ~ partition_id ~ '" skipped (microbatch_partition_rows_reset); ' ~
+                        'it is recorded anew after the REPLACE', silence_mode) -}}
+            {%- endif -%}
+            {{- return(none) -}}
+        {%- endif -%}
+
+        {%- set baseline_relation = diu.partition_rows_relation(relation.schema) -%}
+        {%- set baseline_query -%}
+            select
+                b.recorded_rows,
+                b.last_recorded_at                         as recorded_at,
+                b.recorded_by,
+                (select sum(rows) from system.parts
+                 where database = '{{ relation.schema }}'
+                   and table = '{{ relation.identifier }}'
+                   and partition_id = '{{ partition_id }}'
+                   and active)                             as current_rows,
+                uptime()                                   as server_uptime
+            from
+                (
+                    select
+                        argMax(rows, recorded_at)          as recorded_rows,
+                        max(recorded_at)                   as last_recorded_at,
+                        argMax(invocation_id, recorded_at) as recorded_by
+                    from {{ baseline_relation }}
+                    where table = '{{ relation.identifier }}'
+                      and partition_id = '{{ partition_id }}'
+                    having count() > 0
+                ) as b
+        {%- endset -%}
+        {%- set rows = run_query(baseline_query).rows -%}
+
+        {%- if not rows -%}
+            {%- if this is defined -%}
+                {{- diu.mcr_log_colored(
+                        'Partition rows baseline for "' ~ partition_id ~ '": none recorded yet', silence_mode) -}}
+            {%- endif -%}
+            {{- return(none) -}}
+        {%- endif -%}
+
+        {%- set result = rows[0] -%}
+        {%- set recorded_rows = result['recorded_rows'] or 0 -%}
+        {%- set current_rows = result['current_rows'] or 0 -%}
+
+        {%- if this is defined -%}
+            {{- diu.mcr_log_colored(
+                    'Partition rows baseline for "' ~ partition_id ~ '":\n\trecorded: ' ~ recorded_rows ~
+                    ' (' ~ result['recorded_at'] ~ ')\n\tnow: ' ~ current_rows, silence_mode) -}}
+        {%- endif -%}
+
+        {%- if current_rows != recorded_rows -%}
+            {%- set mismatch_message =
+                    'Partition rows baseline mismatch on partition "' ~ partition_id ~ '" of ' ~
+                    relation.schema ~ '.' ~ relation.identifier ~ ':\n' ~
+                    '\trecorded after the previous REPLACE: ' ~ recorded_rows ~ ' rows (' ~ result['recorded_at'] ~
+                    ', invocation ' ~ result['recorded_by'] ~ ')\n' ~
+                    '\tnow: ' ~ current_rows ~ ' rows (' ~ ('+' if current_rows > recorded_rows else '') ~
+                    (current_rows - recorded_rows) ~ ')\n' ~
+                    '\tserver uptime: ' ~ result['server_uptime'] ~ ' s\n' ~
+                    'Nothing but this model writes into the partition between runs. More rows usually means ' ~
+                    'replaced parts came back after a ClickHouse restart (BI-10065); fewer, a manual delete. ' ~
+                    'Identical parts are already healed at this point, so look for rows doubled inside merged ' ~
+                    'parts (count() - uniqExact(<row identity>) by hour) and rebuild that window. After a ' ~
+                    'deliberate manual change run once with --vars \'{microbatch_partition_rows_reset: [' ~
+                    relation.identifier ~ ']}\'.' -%}
+            {%- if this is defined -%}
+                {{- diu.mcr_log_colored(mismatch_message, true, color='red') -}}
+            {%- endif -%}
+            {%- if action == 'fail' -%}
+                {%- do exceptions.raise_compiler_error(mismatch_message ~ '\nAborting before the copy; target is left as it was.') -%}
+            {%- endif -%}
+        {%- endif -%}
+    {%- endif -%}
 {%- endmacro -%}
