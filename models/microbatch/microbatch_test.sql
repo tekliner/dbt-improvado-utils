@@ -23,3 +23,6 @@ with
     )
 
 select * from microbatch_test_input
+{%- if var('empty_input', false) %}
+where false
+{%- endif %}
