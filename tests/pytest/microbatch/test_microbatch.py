@@ -628,11 +628,14 @@ class TestMicrobatch:
         self.execute_test(ch_client, {'materialization_start_date': start})
 
         partition_id = self._copied_partition(con)
+        before = self._rows(con)
+        # the oldest rows of the partition: always below the rewritten window, whatever the input data
         con.command(
             f"alter table default.{MICROBATCH_TEST_MODEL} delete where _partition_id = '{partition_id}' "
-            f"and event_datetime < (select max(event_datetime) - interval 13 hour from default.{MICROBATCH_TEST_MODEL}) "
-            f"and toMinute(event_datetime) < 10 settings mutations_sync = 2"
+            f"and event_datetime = (select min(event_datetime) from default.{MICROBATCH_TEST_MODEL} "
+            f"where _partition_id = '{partition_id}') settings mutations_sync = 2"
         )
+        assert self._rows(con) < before, 'the setup did not delete any old rows'
 
         self._run(start, expect_pass=False, partition_rows_baseline_action='fail')
         self._run(start, partition_rows_baseline_action='fail',
