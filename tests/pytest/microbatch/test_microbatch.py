@@ -660,3 +660,28 @@ class TestMicrobatch:
             f"where table = '{MICROBATCH_TEST_MODEL}' and partition_id = '{self._copied_partition(con)}'"
         )['n'][0]
         assert recorded > 0, 'the run must record the partition it replaced'
+
+    def test_partition_rows_table_is_not_recreated_on_every_run(self, ch_client, setup_test_environment):
+        """
+        In a Replicated database every CREATE goes through the DDL queue, even one that finds the
+        table. Once the baseline table exists, a run must not issue CREATE for it again.
+        """
+
+        con = ch_client
+        start = setup_test_environment['min_timestamp'].strftime("%Y-%m-%d")
+        self.execute_test(ch_client, {'materialization_start_date': start})
+
+        creates_query = f"""
+            select count() as n
+            from system.query_log
+            where type = 'QueryFinish'
+              and query_kind = 'Create'
+              and query like '%{self.BASELINE_TABLE}%'
+            """
+        con.command('system flush logs')
+        creates_before = con.query_df(creates_query)['n'][0]
+
+        self._run(start)
+
+        con.command('system flush logs')
+        assert con.query_df(creates_query)['n'][0] == creates_before, 'the run issued CREATE for an existing table'
