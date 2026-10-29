@@ -406,7 +406,10 @@ class TestMicrobatch:
             f"from default.{MICROBATCH_TEST_MODEL}"
         )['p'][0]
 
-        # twin every part of that partition: attach it into a helper table and back again
+        # twin every part of that partition: attach it into a helper table and back again. Merges
+        # are stopped until the run: a background merge folding a part and its twin together
+        # leaves the rows doubled in one part, with no twins left to heal
+        con.command(f'system stop merges default.{MICROBATCH_TEST_MODEL}')
         helper = f'{MICROBATCH_TEST_MODEL}__twin_helper'
         con.command(f'drop table if exists default.{helper}')
         con.command(f'create table default.{helper} as default.{MICROBATCH_TEST_MODEL}')
@@ -430,7 +433,10 @@ class TestMicrobatch:
         doubled = con.query_df(QUERY_COUNT_ROWS.format(table_name=MICROBATCH_TEST_MODEL))['rows_count'][0]
         assert doubled > input_rows, 'the setup did not double any rows'
 
-        run_dbt(['run', '--select', f'{MICROBATCH_TEST_MODEL}', '--vars', dbt_vars])
+        try:
+            run_dbt(['run', '--select', f'{MICROBATCH_TEST_MODEL}', '--vars', dbt_vars])
+        finally:
+            con.command('system start merges')
 
         assert con.query_df(pairs_query)['n'][0] == 0, 'identical parts survived the run'
         actual = con.query_df(QUERY_COUNT_ROWS.format(table_name=MICROBATCH_TEST_MODEL))['rows_count'][0]
@@ -906,3 +912,65 @@ class TestMicrobatch:
         )['name'].tolist()
         assert 'min_block' in columns, columns
         assert self._rows(con) == rows
+
+    def test_replicated_table_records_rows_per_partition(self, ch_client, setup_test_environment):
+        """
+        BI-10065, 2026-10-29: ReplicatedMergeTree numbers blocks per partition, not per table, so
+        in improvado_models (a Replicated database) the current month can sit at lower block numbers
+        than an older one. v1.3.50 took the REPLACE floor table-wide, found no part above it in the
+        current month, recorded 0 rows, and the next run stopped on the mismatch. Here the model is
+        built in a Replicated database and an older partition is pushed to higher block numbers
+        (inserts that are deleted again); two incremental runs must pass and the baseline must hold
+        the real row count.
+        """
+
+        con = ch_client
+        db = 'microbatch_replicated_test'
+        table = f'{db}.{MICROBATCH_TEST_MODEL}'
+        start = setup_test_environment['min_timestamp'].strftime("%Y-%m-%d")
+        dbt_vars = f"{{'materialization_start_date': '{start}', 'enabled': True, 'production_schema': '{db}', 'engine': 'ReplicatedMergeTree()'}}"
+        con.command(f'drop database if exists {db} sync')
+        con.command(f"create database {db} engine = Replicated('/clickhouse/databases/{db}', '{{shard}}', '{{replica}}')")
+        default_db = environ['CLICKHOUSE_DATABASE']
+        environ['CLICKHOUSE_DATABASE'] = db
+        try:
+            run_dbt(['run', '--select', MICROBATCH_INPUT_MODEL, '--vars', dbt_vars])
+            run_dbt(['run', '--select', MICROBATCH_TEST_MODEL, '--full-refresh', '--vars', dbt_vars])
+            assert con.query_df(
+                f"select engine from system.tables where database = '{db}' and name = '{MICROBATCH_TEST_MODEL}'"
+            )['engine'][0] == 'ReplicatedMergeTree'
+
+            partitions = con.query_df(
+                f"select toString(min(toYYYYMM(event_datetime))) as older, "
+                f"toString(toYYYYMM(max(event_datetime) - interval 12 hour)) as copied, "
+                f"toString(min(event_datetime)) as older_time from {table}"
+            )
+            older, copied, older_time = partitions['older'][0], partitions['copied'][0], partitions['older_time'][0]
+            assert older != copied, 'the input must span more than one partition'
+            for i in range(60):
+                con.command(
+                    f"insert into {table} (event_datetime, event_id, event_data) "
+                    f"values ('{older_time}', {i}, 'block_filler')"
+                )
+            con.command(f"alter table {table} delete where event_data = 'block_filler' settings mutations_sync = 2")
+            blocks = con.query_df(
+                "select partition_id, max(max_block_number) as b from system.parts "
+                f"where database = '{db}' and table = '{MICROBATCH_TEST_MODEL}' and active group by partition_id"
+            ).set_index('partition_id')['b']
+            assert blocks[older] > blocks[copied], f'the setup did not push {older} above {copied}: {blocks}'
+
+            run_dbt(['run', '--select', MICROBATCH_TEST_MODEL, '--vars', dbt_vars])
+            run_dbt(['run', '--select', MICROBATCH_TEST_MODEL, '--vars', dbt_vars])
+
+            recorded = con.query_df(
+                f"select argMax(rows, recorded_at) as r from {db}.{self.BASELINE_TABLE} "
+                f"where table = '{MICROBATCH_TEST_MODEL}' and partition_id = '{copied}'"
+            )['r'][0]
+            actual = con.query_df(
+                f"select sum(rows) as r from system.parts where database = '{db}' "
+                f"and table = '{MICROBATCH_TEST_MODEL}' and active and partition_id = '{copied}'"
+            )['r'][0]
+            assert recorded == actual and actual > 0, f'recorded {recorded}, actual {actual}'
+        finally:
+            environ['CLICKHOUSE_DATABASE'] = default_db
+            con.command(f'drop database if exists {db} sync')

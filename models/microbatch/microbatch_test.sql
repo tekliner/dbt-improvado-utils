@@ -1,13 +1,14 @@
 {{
   config(
     materialized                = 'microbatch',
-    production_schema           = 'default',
+    production_schema           = var('production_schema', 'default'),
     output_datetime_column      = 'event_datetime',
     materialization_start_date  = var('materialization_start_date'),
     time_unit_name              = 'hour',
     batch_size                  = var('batch_size', default=24),
     overwrite_size              = var('overwrite_size', default=12),
     partition_by                = 'toYYYYMM(event_datetime)',
+    engine                      = var('engine', 'MergeTree()'),
     order_by                    = 'event_datetime',
     enabled                     = var('enabled', false),
     batch_query_settings        = var('batch_query_settings', default={}),

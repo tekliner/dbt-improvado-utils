@@ -351,9 +351,9 @@
         {%- do diu.check_untouched_rows_match(
                     target_relation, tmp_relation, partition_id, output_datetime_column, start_time, silence_mode) -%}
 
-    -- every block the REPLACE puts into target lies above this one: whatever a restart brings
-    -- back between the REPLACE and the record below stays out of the baseline (BI-10065)
-        {%- set replace_block_floor = diu.get_next_block_number(target_relation) -%}
+    -- every block the REPLACE puts into a partition lies above that partition's floor: whatever a
+    -- restart brings back between the REPLACE and the record below stays out of the baseline (BI-10065)
+        {%- set replace_block_floors = diu.get_next_block_numbers(target_relation) -%}
 
     -- replacing partitions
         {{- diu.mcr_log_colored('Replacing partitions from ' ~ tmp_relation ~ ' to ' ~ target_relation, silence_mode) -}}
@@ -367,7 +367,7 @@
         {%- if partition_rows_reset -%}
             {%- do diu.record_partition_rows(target_relation, none) -%}
         {%- else -%}
-            {%- do diu.record_partition_rows(target_relation, tmp_relation, replace_block_floor) -%}
+            {%- do diu.record_partition_rows(target_relation, tmp_relation, replace_block_floors) -%}
         {%- endif -%}
     {%- endif -%}
 -- dropping tmp table after replacing or exchanging
@@ -1179,31 +1179,39 @@
 {%- endmacro -%}
 
 
-{%- macro get_next_block_number(relation) -%}
+{%- macro get_next_block_numbers(relation) -%}
 {#
-    The lowest block number a part written into relation from now on can have: every new part,
-    REPLACE PARTITION clones included, gets block numbers from the table's counter, which is
-    above every block an active part holds (BI-10065).
+    Per partition, the lowest block number a part written into it from now on can have (BI-10065).
+    Every new part, REPLACE PARTITION clones included, gets block numbers above every block an
+    active part of its partition holds. Per partition, not per table: a plain MergeTree numbers
+    blocks table-wide, but a ReplicatedMergeTree (every table in improvado_models) numbers them per
+    partition, and there the current month can sit below an older one (src_improvado_order_runs_billing
+    on Lisbon, 2026-10-29: 202610 at blocks 48515-48522, 202605 at 65836). A table-wide floor put
+    every new part of 202610 below it, and the run recorded 0 rows.
     Arguments:
         relation(api.Relation):     The relation
     Returns:
-        int (0 when the query is not executed)
+        dict: partition_id -> int; a partition with no active part is absent (floor 0)
 #}
+    {%- set floors = {} -%}
     {%- if execute -%}
         {%- set next_block_query -%}
-            select max(max_block_number) + 1
+            select partition_id, max(max_block_number) + 1
             from system.parts
             where database = '{{ relation.schema }}'
               and table = '{{ relation.identifier }}'
               and active
+            group by partition_id
         {%- endset -%}
-        {{- return(run_query(next_block_query)[0][0] or 0) -}}
+        {%- for row in run_query(next_block_query).rows -%}
+            {%- do floors.update({row[0]: row[1] | int}) -%}
+        {%- endfor -%}
     {%- endif -%}
-    {{- return(0) -}}
+    {{- return(floors) -}}
 {%- endmacro -%}
 
 
-{%- macro record_partition_rows(relation, partitions_relation, min_block=0) -%}
+{%- macro record_partition_rows(relation, partitions_relation, min_blocks={}) -%}
 {#
     Stores the current row count of the given partitions of relation, and the lowest block
     number of their parts, as the baseline that check_partition_rows_baseline and
@@ -1213,9 +1221,10 @@
         partitions_relation(api.Relation):  The relation whose active partitions were replaced
                                             (the tmp relation); none records every partition
                                             of relation
-        min_block(int):                     Only parts from this block number up are counted:
-                                            the first block of the REPLACE, so that parts a
-                                            restart brought back in the meantime are left out
+        min_blocks(dict):                   partition_id -> block number: only parts of that
+                                            partition from it up are counted (the first block
+                                            of the REPLACE), so that parts a restart brought
+                                            back in the meantime are left out; 0 where absent
     Returns:
         None
 #}
@@ -1272,7 +1281,13 @@
                         where database = '{{ relation.schema }}'
                           and table = '{{ relation.identifier }}'
                           and active
-                          and min_block_number >= {{ min_block }}
+                          {%- if min_blocks %}
+                          and min_block_number >= transform(
+                                partition_id,
+                                [{%- for k in min_blocks -%}'{{ k }}'{{ ', ' if not loop.last }}{%- endfor -%}],
+                                [{%- for k in min_blocks -%}toInt64({{ min_blocks[k] }}){{ ', ' if not loop.last }}{%- endfor -%}],
+                                toInt64(0))
+                          {%- endif %}
                         group by partition_id
                     ) as r
                     on p.partition_id = r.partition_id
@@ -1383,6 +1398,62 @@
 {%- endmacro -%}
 
 
+{%- macro get_partition_rows_baseline_mismatches(relation) -%}
+{#
+    The partitions of relation whose row count differs from the one the last run that replaced them
+    recorded (BI-10065), without acting on them: check_partition_rows_baseline reports or raises on
+    the result, a wrapping materialization (billing_state_microbatch in the dbt repo) can stop
+    before its own writes and release what it holds.
+    Arguments:
+        relation(api.Relation):     The model relation (target)
+    Returns:
+        list of rows: partition_id, recorded_rows, recorded_at, recorded_by, current_rows,
+        server_uptime; empty when every recorded partition matches or nothing is executed
+#}
+    {%- set diu = dbt_improvado_utils -%}
+    {%- if not execute -%}
+        {{- return([]) -}}
+    {%- endif -%}
+    {%- set baseline_relation = diu.partition_rows_relation(relation.schema) -%}
+    {%- set baseline_query -%}
+        select
+            b.partition_id                             as partition_id,
+            b.recorded_rows                            as recorded_rows,
+            b.last_recorded_at                         as recorded_at,
+            b.recorded_by                              as recorded_by,
+            coalesce(p.current_rows, 0)                as current_rows,
+            uptime()                                   as server_uptime
+        from
+            (
+                select
+                    partition_id,
+                    argMax(rows, recorded_at)          as recorded_rows,
+                    max(recorded_at)                   as last_recorded_at,
+                    argMax(invocation_id, recorded_at) as recorded_by
+                from {{ baseline_relation }}
+                where table = '{{ relation.identifier }}'
+                group by partition_id
+            ) as b
+            left join
+            (
+                select partition_id, sum(rows) as current_rows
+                from system.parts
+                where database = '{{ relation.schema }}'
+                  and table = '{{ relation.identifier }}'
+                  and active
+                group by partition_id
+            ) as p
+            on b.partition_id = p.partition_id
+        where
+            coalesce(p.current_rows, 0) != b.recorded_rows
+        order by
+            b.partition_id
+        settings join_use_nulls = 1
+    {%- endset -%}
+    {{- return(run_query(baseline_query).rows) -}}
+{%- endmacro -%}
+
+
 {%- macro check_partition_rows_baseline(relation, action, reset, silence_mode) -%}
 {#
     Compares the row count of every partition with the one the previous run that replaced it
@@ -1413,43 +1484,7 @@
             {{- return(none) -}}
         {%- endif -%}
 
-        {%- set baseline_relation = diu.partition_rows_relation(relation.schema) -%}
-        {%- set baseline_query -%}
-            select
-                b.partition_id                             as partition_id,
-                b.recorded_rows                            as recorded_rows,
-                b.last_recorded_at                         as recorded_at,
-                b.recorded_by                              as recorded_by,
-                coalesce(p.current_rows, 0)                as current_rows,
-                uptime()                                   as server_uptime
-            from
-                (
-                    select
-                        partition_id,
-                        argMax(rows, recorded_at)          as recorded_rows,
-                        max(recorded_at)                   as last_recorded_at,
-                        argMax(invocation_id, recorded_at) as recorded_by
-                    from {{ baseline_relation }}
-                    where table = '{{ relation.identifier }}'
-                    group by partition_id
-                ) as b
-                left join
-                (
-                    select partition_id, sum(rows) as current_rows
-                    from system.parts
-                    where database = '{{ relation.schema }}'
-                      and table = '{{ relation.identifier }}'
-                      and active
-                    group by partition_id
-                ) as p
-                on b.partition_id = p.partition_id
-            where
-                coalesce(p.current_rows, 0) != b.recorded_rows
-            order by
-                b.partition_id
-            settings join_use_nulls = 1
-        {%- endset -%}
-        {%- set mismatches = run_query(baseline_query).rows -%}
+        {%- set mismatches = diu.get_partition_rows_baseline_mismatches(relation) -%}
 
         {%- if not mismatches -%}
             {%- if this is defined -%}

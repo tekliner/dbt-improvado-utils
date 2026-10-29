@@ -9,7 +9,8 @@ services:
     networks:
       - app
     depends_on:
-      - clickhouse
+      clickhouse:
+        condition: service_healthy
     entrypoint: ['sleep', 'infinity']
 
   clickhouse:
@@ -18,6 +19,15 @@ services:
     environment:
       - CLICKHOUSE_USER=$CLICKHOUSE_USER
       - CLICKHOUSE_PASSWORD=$CLICKHOUSE_PASSWORD
+    volumes:
+      - ./tests/clickhouse/keeper.xml:/etc/clickhouse-server/config.d/keeper.xml:ro
+    # the embedded Keeper makes the server take a few seconds longer to accept connections;
+    # `docker compose up -d` waits for this before starting dbt, so pytest never runs early
+    healthcheck:
+      test: ['CMD-SHELL', 'clickhouse-client --user "$$CLICKHOUSE_USER" --password "$$CLICKHOUSE_PASSWORD" -q "select 1"']
+      interval: 2s
+      timeout: 5s
+      retries: 60
     networks:
       - app
 
