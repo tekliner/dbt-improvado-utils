@@ -708,3 +708,201 @@ class TestMicrobatch:
 
         con.command('system flush logs')
         assert con.query_df(creates_query)['n'][0] == creates_before, 'the run issued CREATE for an existing table'
+
+    # BI-10065: parts brought back by a restart ----------------------------------------------------
+    def _parts_query(self, partition_id):
+        return (
+            "select name, min_block_number, max_block_number, rows from system.parts "
+            f"where database = 'default' and table = '{MICROBATCH_TEST_MODEL}' and active and rows > 0 "
+            f"and partition_id = '{partition_id}' order by min_block_number"
+        )
+
+    def _bring_back_replaced_version(self, con, partition_id, current_version_change=None):
+        """
+        What a restart inside old_parts_lifetime after a REPLACE PARTITION leaves behind: the
+        replaced version of the partition active again, below every block of the current one, and
+        a baseline recorded for the current one. A restart cannot be staged here, so it is built
+        the other way round: the parts the partition holds now become the old version, a copy of
+        them (changed by current_version_change, if given) is attached above them as the current
+        version, and the baseline is recorded for that copy, as the run that replaced it would have.
+        Merges are stopped on target, so the two versions stay apart; the caller starts them again.
+        """
+
+        helper = f'{MICROBATCH_TEST_MODEL}__replaced_version_helper'
+        con.command(f'system stop merges default.{MICROBATCH_TEST_MODEL}')
+        con.command(f'drop table if exists default.{helper}')
+        con.command(f'create table default.{helper} as default.{MICROBATCH_TEST_MODEL}')
+        con.command(
+            f"alter table default.{helper} attach partition id '{partition_id}' from default.{MICROBATCH_TEST_MODEL}"
+        )
+        con.command(f"optimize table default.{helper} partition id '{partition_id}' final")
+        if current_version_change:
+            con.command(current_version_change.format(table=f'default.{helper}'))
+
+        floor = con.query_df(
+            "select max(max_block_number) + 1 as b from system.parts "
+            f"where database = 'default' and table = '{MICROBATCH_TEST_MODEL}' and active"
+        )['b'][0]
+        con.command(
+            f"alter table default.{MICROBATCH_TEST_MODEL} attach partition id '{partition_id}' from default.{helper}"
+        )
+        con.command(f'drop table default.{helper}')
+        con.command(
+            f"insert into default.{self.BASELINE_TABLE} (table, partition_id, rows, invocation_id, recorded_at, min_block) "
+            f"select '{MICROBATCH_TEST_MODEL}', partition_id, sum(rows), 'test', now64(3), min(min_block_number) "
+            f"from system.parts where database = 'default' and table = '{MICROBATCH_TEST_MODEL}' and active "
+            f"and partition_id = '{partition_id}' and min_block_number >= {floor} group by partition_id"
+        )
+        parts = con.query_df(self._parts_query(partition_id))
+        assert (parts['max_block_number'] < floor).any() and (parts['min_block_number'] >= floor).any(), (
+            f'the setup did not leave two versions apart: {parts}'
+        )
+        return floor
+
+    def test_run_records_min_block_of_replaced_partitions(self, ch_client, setup_test_environment):
+        """
+        An incremental run records, for the partition it replaced, the lowest block number the
+        REPLACE put in: every part of the partition starts at it or above.
+        """
+
+        con = ch_client
+        start = setup_test_environment['min_timestamp'].strftime("%Y-%m-%d")
+        self.execute_test(ch_client, {'materialization_start_date': start})
+        self._run(start)
+
+        partition_id = self._copied_partition(con)
+        recorded = con.query_df(
+            f"select argMax(min_block, recorded_at) as b, argMax(rows, recorded_at) as r "
+            f"from default.{self.BASELINE_TABLE} where table = '{MICROBATCH_TEST_MODEL}' "
+            f"and partition_id = '{partition_id}'"
+        )
+        parts = con.query_df(self._parts_query(partition_id))
+        assert recorded['b'][0] > 0, 'no min_block recorded'
+        assert recorded['b'][0] == parts['min_block_number'].min(), f'{recorded} vs {parts}'
+        assert recorded['r'][0] == parts['rows'].sum()
+
+    def test_parts_brought_back_by_a_restart_are_healed(self, ch_client, setup_test_environment):
+        """
+        BI-10065, 2026-10-29: after a restart at 11:13 UTC the copied partition of
+        fct_order_run_events held its replaced version next to the current one, partly in parts
+        that were not byte-identical, so check_duplicate_parts could not heal them, and rows older
+        than the overwrite window stayed doubled. Here the current version also lacks the newest
+        hour of the old one, as after a real REPLACE. With 'heal' the old version is dropped, the
+        run passes and the model holds the input exactly once; the same in a partition the run does
+        not copy (yesterday's daily partition, the previous month at a month boundary).
+        """
+
+        con = ch_client
+        start = setup_test_environment['min_timestamp'].strftime("%Y-%m-%d")
+        input_rows = con.query_df(QUERY_COUNT_ROWS.format(table_name=MICROBATCH_INPUT_MODEL))['rows_count'][0]
+        self.execute_test(ch_client, {'materialization_start_date': start})
+        self._run(start)
+
+        copied = self._copied_partition(con)
+        older = con.query_df(
+            f"select toString(min(toYYYYMM(event_datetime))) as p from default.{MICROBATCH_TEST_MODEL}"
+        )['p'][0]
+        assert older != copied, 'the input must span more than one partition'
+
+        try:
+            floor = self._bring_back_replaced_version(
+                con, copied,
+                current_version_change=(
+                    "alter table {table} delete where event_datetime >= "
+                    "(select max(event_datetime) - interval 1 hour from {table}) settings mutations_sync = 2"
+                ),
+            )
+            self._bring_back_replaced_version(con, older)
+            assert self._rows(con) > input_rows, 'the setup did not double any rows'
+
+            self._run(start)
+        finally:
+            con.command('system start merges')
+
+        assert self._rows(con) == input_rows, f'rows after healing: {self._rows(con)}, input: {input_rows}'
+        older_parts = con.query_df(self._parts_query(older))
+        assert (older_parts['min_block_number'] >= floor).all(), f'old parts survived: {older_parts}'
+
+    def test_parts_merged_across_versions_stop_the_run(self, ch_client, setup_test_environment):
+        """
+        Once a merge has folded an old part and a current one together, no part can be dropped
+        without losing current rows. 'heal' must leave target as it is and fail the run.
+        """
+
+        con = ch_client
+        start = setup_test_environment['min_timestamp'].strftime("%Y-%m-%d")
+        self.execute_test(ch_client, {'materialization_start_date': start})
+        self._run(start)
+
+        partition_id = self._copied_partition(con)
+        try:
+            floor = self._bring_back_replaced_version(con, partition_id)
+            con.command('system start merges')
+            con.command(f"optimize table default.{MICROBATCH_TEST_MODEL} partition id '{partition_id}' final")
+            parts = con.query_df(self._parts_query(partition_id))
+            assert ((parts['min_block_number'] < floor) & (parts['max_block_number'] >= floor)).any(), (
+                f'the setup did not merge the two versions: {parts}'
+            )
+            doubled = self._rows(con)
+
+            self._run(start, expect_pass=False)
+        finally:
+            con.command('system start merges')
+
+        assert self._rows(con) == doubled, "'heal' must not touch a partition it cannot heal"
+
+    def test_partition_rows_baseline_checks_every_partition(self, ch_client, setup_test_environment):
+        """
+        Rows doubled in a partition the run does not copy were not looked at before; now every
+        recorded partition is compared, and 'heal' stops the run (no old blocks to drop here).
+        """
+
+        con = ch_client
+        start = setup_test_environment['min_timestamp'].strftime("%Y-%m-%d")
+        self.execute_test(ch_client, {'materialization_start_date': start})
+
+        older = con.query_df(
+            f"select toString(min(toYYYYMM(event_datetime))) as p from default.{MICROBATCH_TEST_MODEL}"
+        )['p'][0]
+        assert older != self._copied_partition(con), 'the input must span more than one partition'
+        con.command(
+            f"insert into default.{MICROBATCH_TEST_MODEL} "
+            f"select * from default.{MICROBATCH_TEST_MODEL} where _partition_id = '{older}' limit 50"
+        )
+        doubled = self._rows(con)
+
+        self._run(start, expect_pass=False)
+        assert self._rows(con) == doubled
+        # the reset records every partition, so the next run passes without it
+        self._run(start, microbatch_partition_rows_reset=[MICROBATCH_TEST_MODEL])
+        self._run(start)
+
+    def test_partition_rows_table_gets_min_block_column(self, ch_client, setup_test_environment):
+        """
+        A baseline table created before min_block existed gets the column on the next run, and its
+        old rows (min_block 0) are left to the row count check: nothing is dropped on their account.
+        """
+
+        con = ch_client
+        start = setup_test_environment['min_timestamp'].strftime("%Y-%m-%d")
+        self.execute_test(ch_client, {'materialization_start_date': start})
+        con.command(f'drop table if exists default.{self.BASELINE_TABLE}')
+        con.command(
+            f'create table default.{self.BASELINE_TABLE} (table String, partition_id String, rows UInt64, '
+            f'invocation_id String, recorded_at DateTime64(3)) '
+            f'engine = ReplacingMergeTree(recorded_at) order by (table, partition_id)'
+        )
+        con.command(
+            f"insert into default.{self.BASELINE_TABLE} "
+            f"select '{MICROBATCH_TEST_MODEL}', partition_id, sum(rows), 'old', now64(3) from system.parts "
+            f"where database = 'default' and table = '{MICROBATCH_TEST_MODEL}' and active group by partition_id"
+        )
+        rows = self._rows(con)
+
+        self._run(start)
+
+        columns = con.query_df(
+            f"select name from system.columns where database = 'default' and table = '{self.BASELINE_TABLE}'"
+        )['name'].tolist()
+        assert 'min_block' in columns, columns
+        assert self._rows(con) == rows
