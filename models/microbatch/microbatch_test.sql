@@ -11,7 +11,7 @@
     order_by                    = 'event_datetime',
     enabled                     = var('enabled', false),
     batch_query_settings        = var('batch_query_settings', default={}),
-    partition_rows_baseline_action = var('partition_rows_baseline_action', default='warn'),
+    partition_rows_baseline_action = var('partition_rows_baseline_action', default='heal'),
     )
 }}
 
