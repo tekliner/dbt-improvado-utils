@@ -18,6 +18,8 @@ services:
     environment:
       - CLICKHOUSE_USER=$CLICKHOUSE_USER
       - CLICKHOUSE_PASSWORD=$CLICKHOUSE_PASSWORD
+    volumes:
+      - ./tests/clickhouse/keeper.xml:/etc/clickhouse-server/config.d/keeper.xml:ro
     networks:
       - app
 
