@@ -857,6 +857,74 @@ class TestMicrobatch:
 
         assert self._rows(con) == doubled, "'heal' must not touch a partition it cannot heal"
 
+    def _merge_across_versions(self, con, partition_id):
+        """Brings the replaced version back and lets a merge fold it into the current one."""
+        floor = self._bring_back_replaced_version(con, partition_id)
+        con.command('system start merges')
+        con.command(f"optimize table default.{MICROBATCH_TEST_MODEL} partition id '{partition_id}' final")
+        parts = con.query_df(self._parts_query(partition_id))
+        assert ((parts['min_block_number'] < floor) & (parts['max_block_number'] >= floor)).any(), (
+            f'the setup did not merge the two versions: {parts}'
+        )
+
+    def test_parts_merged_across_versions_are_rebuilt(self, ch_client, setup_test_environment):
+        """
+        BI-10065, 2026-11-02: a merge folded the version a restart brought back into a current part
+        of fct_agent_suggestion_events; 'heal' stopped every run until the partition was fixed by
+        hand. With 'rebuild' the run starts its window at the beginning of the copied partition,
+        rewrites it from the input and records a baseline that matches; the next run is an ordinary
+        one again.
+        """
+
+        con = ch_client
+        start = setup_test_environment['min_timestamp'].strftime("%Y-%m-%d")
+        input_rows = con.query_df(QUERY_COUNT_ROWS.format(table_name=MICROBATCH_INPUT_MODEL))['rows_count'][0]
+        self.execute_test(ch_client, {'materialization_start_date': start})
+        self._run(start)
+
+        partition_id = self._copied_partition(con)
+        try:
+            self._merge_across_versions(con, partition_id)
+            assert self._rows(con) > input_rows, 'the setup did not double any rows'
+
+            self._run(start, partition_rows_baseline_action='rebuild')
+        finally:
+            con.command('system start merges')
+
+        assert self._rows(con) == input_rows, f'rows after the rebuild: {self._rows(con)}, input: {input_rows}'
+        duplicates = con.query_df(
+            f"select count() - uniqExact(event_datetime, event_id) as n from default.{MICROBATCH_TEST_MODEL}"
+        )['n'][0]
+        assert duplicates == 0
+        self._run(start, partition_rows_baseline_action='heal')
+        assert self._rows(con) == input_rows
+
+    def test_rebuild_does_not_reach_an_earlier_partition(self, ch_client, setup_test_environment):
+        """
+        'rebuild' rewrites the copied partition and the ones after it, never an earlier one: a
+        merged partition before the copied one stops the run and target stays as it is.
+        """
+
+        con = ch_client
+        start = setup_test_environment['min_timestamp'].strftime("%Y-%m-%d")
+        self.execute_test(ch_client, {'materialization_start_date': start})
+        self._run(start)
+
+        copied = self._copied_partition(con)
+        older = con.query_df(
+            f"select toString(min(toYYYYMM(event_datetime))) as p from default.{MICROBATCH_TEST_MODEL}"
+        )['p'][0]
+        assert older != copied, 'the input must span more than one partition'
+        try:
+            self._merge_across_versions(con, older)
+            doubled = self._rows(con)
+
+            self._run(start, expect_pass=False, partition_rows_baseline_action='rebuild')
+        finally:
+            con.command('system start merges')
+
+        assert self._rows(con) == doubled, "'rebuild' must not touch a partition before the copied one"
+
     def test_partition_rows_baseline_checks_every_partition(self, ch_client, setup_test_environment):
         """
         Rows doubled in a partition the run does not copy were not looked at before; now every
