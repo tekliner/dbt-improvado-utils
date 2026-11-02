@@ -58,12 +58,14 @@
 
 -- what to do when a partition no longer holds the rows the previous run left in it (BI-10065):
 -- 'heal' (default) first drops the parts a server restart brought back and then stops the run
--- on whatever is still off, 'warn' only logs it, 'fail' stops the run before the copy, 'off'
--- skips the check
+-- on whatever is still off, 'rebuild' heals the same way and then rebuilds what is still off from
+-- the inputs, as long as that is the partition the run copies or a later one (anything older
+-- stops the run as with 'heal'; use it only where the inputs still hold the whole partition),
+-- 'warn' only logs it, 'fail' stops the run before the copy, 'off' skips the check
     {%- set partition_rows_baseline_action      = config.get('partition_rows_baseline_action', default='heal') -%}
-    {%- if partition_rows_baseline_action not in ('heal', 'warn', 'fail', 'off') -%}
+    {%- if partition_rows_baseline_action not in ('heal', 'rebuild', 'warn', 'fail', 'off') -%}
         {%- do exceptions.raise_compiler_error(
-                    "partition_rows_baseline_action must be 'heal', 'warn', 'fail' or 'off', got '" ~
+                    "partition_rows_baseline_action must be 'heal', 'rebuild', 'warn', 'fail' or 'off', got '" ~
                     partition_rows_baseline_action ~ "'") -%}
     {%- endif -%}
     {%- set partition_rows_reset                = diu.partition_rows_reset_requested(this.identifier) -%}
@@ -167,6 +169,23 @@
                 '\nLast record datetime:\n\t' ~ last_record_datetime ~
                 '\nLast record datetime with overwrite size:\n\t' ~ start_time, debug_mode) -}}
 
+    -- rebuilding a partition the healing cannot undo (BI-10065, 2026-11-02). Once a merge has
+    -- folded the version a restart brought back into a current part (fct_agent_suggestion_events,
+    -- merged 11:36 UTC), no part can be dropped and 'heal' stops the run; the model stood still
+    -- with every row twice until the partition was deduplicated by hand at 16:00. Here the window
+    -- starts at the beginning of the copied partition instead, so the run rewrites it from the
+    -- inputs; partitions after it are rewritten whole by every run anyway. Decided before the
+    -- batches are counted, since it moves start_time.
+        {%- if partition_rows_baseline_action == 'rebuild' and not partition_rows_reset -%}
+            {%- do diu.heal_resurrected_parts(target_relation, silence_mode) -%}
+            {%- set rebuild_start_time =
+                        diu.get_partition_rows_rebuild_start(
+                            target_relation, start_time, partition_by_format, materialization_start_date) -%}
+            {%- if rebuild_start_time is not none -%}
+                {%- set start_time = rebuild_start_time -%}
+            {%- endif -%}
+        {%- endif -%}
+
     {%- else -%}
         {%- set start_time = materialization_start_date -%}
         {{- diu.mcr_log_colored(
@@ -265,7 +284,8 @@
     -- only the one copied below: a restart brings back the partitions the last runs replaced, and
     -- with daily partitions or at a month boundary that is yesterday's one too. It runs after the
     -- healing above, so only what the healing could not undo is reported.
-        {%- if partition_rows_baseline_action != 'off' -%}
+        {#- with 'rebuild' both ran before the batches were counted -#}
+        {%- if partition_rows_baseline_action not in ('off', 'rebuild') -%}
             {%- do diu.check_partition_rows_baseline(
                         target_relation, partition_rows_baseline_action, partition_rows_reset, silence_mode) -%}
         {%- endif -%}
@@ -1518,4 +1538,81 @@
             {%- do exceptions.raise_compiler_error(mismatch_message ~ '\nAborting before the copy; target is left as it was.') -%}
         {%- endif -%}
     {%- endif -%}
+{%- endmacro -%}
+
+
+{%- macro get_partition_rows_rebuild_start(relation, start_time, partition_by_format, materialization_start_date) -%}
+{#
+    Where a run with partition_rows_baseline_action = 'rebuild' starts its window (BI-10065). Called
+    after heal_resurrected_parts, so the partitions still off its baseline are the ones it could not
+    heal: a merge folded a version a restart brought back into a current part, or rows came or went
+    by hand. Only a partition the run rewrites anyway can be rebuilt:
+        - the copied one (the one start_time falls into): the window moves to its beginning, or to
+          materialization_start_date if that is later;
+        - a later one: every run rewrites it whole from start_time on, nothing to move.
+    An earlier partition lies outside the window; it stops the run as 'heal' would.
+    Arguments:
+        relation(api.Relation):                 The model relation (target)
+        start_time(datetime):                   The window start the run computed
+        partition_by_format(string):            yyyy, yyyymm or yyyymmdd
+        materialization_start_date(datetime):   No rebuild starts earlier than it
+    Returns:
+        datetime: the new window start, or none when nothing has to move
+#}
+    {%- set diu = dbt_improvado_utils -%}
+    {%- if not execute -%}
+        {{- return(none) -}}
+    {%- endif -%}
+
+    {%- set mismatches = diu.get_partition_rows_baseline_mismatches(relation) -%}
+    {%- if not mismatches -%}
+        {%- if this is defined -%}
+            {{- diu.mcr_log_colored('Partition rows baseline: every recorded partition matches', true) -}}
+        {%- endif -%}
+        {{- return(none) -}}
+    {%- endif -%}
+
+    {%- set copied_partition_id = diu.get_partition_id(start_time, partition_by_format) -%}
+    {%- set lines = [] -%}
+    {%- set earlier = [] -%}
+    {%- for m in mismatches -%}
+        {%- do lines.append(
+                '\t"' ~ m['partition_id'] ~ '": recorded after the previous REPLACE: ' ~ m['recorded_rows'] ~
+                ' rows (' ~ m['recorded_at'] ~ ', invocation ' ~ m['recorded_by'] ~ '), now: ' ~
+                m['current_rows'] ~ ' rows') -%}
+        {#- the ids of one format compare as strings in time order -#}
+        {%- if m['partition_id'] < copied_partition_id -%}
+            {%- do earlier.append(m['partition_id']) -%}
+        {%- endif -%}
+    {%- endfor -%}
+    {%- set message =
+            'Partition rows baseline mismatch on ' ~ relation.schema ~ '.' ~ relation.identifier ~
+            ' that healing could not undo:\n' ~ lines | join('\n') ~ '\n' ~
+            '\tserver uptime: ' ~ mismatches[0]['server_uptime'] ~ ' s' -%}
+
+    {%- if earlier -%}
+        {%- do exceptions.raise_compiler_error(
+                message ~ '\n' ~
+                'Partitions ' ~ earlier | join(', ') ~ ' lie before the one this run copies (' ~ copied_partition_id ~
+                '), so partition_rows_baseline_action = rebuild does not reach them. Rebuild them by hand ' ~
+                '(BI-10065), or after a deliberate manual change run once with --vars ' ~
+                '\'{microbatch_partition_rows_reset: [' ~ relation.identifier ~ ']}\'.' ~
+                '\nAborting before the copy; target is left as it was.') -%}
+    {%- endif -%}
+
+    {%- set strptime_pattern = {'yyyy': '%Y', 'yyyymm': '%Y%m', 'yyyymmdd': '%Y%m%d'} -%}
+    {%- set copied_partition_start =
+                modules.datetime.datetime.strptime(copied_partition_id, strptime_pattern[partition_by_format]) -%}
+    {%- set rebuild_start = [copied_partition_start, materialization_start_date] | max -%}
+    {%- set moves = copied_partition_id in mismatches | map(attribute='partition_id') | list
+                    and rebuild_start < start_time -%}
+    {%- if this is defined -%}
+        {{- diu.mcr_log_colored(
+                message ~ '\n' ~
+                (('Rebuilding partition "' ~ copied_partition_id ~ '" from the inputs: the window starts at ' ~
+                  rebuild_start ~ ' instead of ' ~ start_time)
+                 if moves else
+                 'Every partition off its baseline is rewritten whole by this run'), true, color='red') -}}
+    {%- endif -%}
+    {{- return(rebuild_start if moves else none) -}}
 {%- endmacro -%}
