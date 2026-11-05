@@ -1,34 +1,112 @@
 name: PR
 on:
-  - pull_request
+  pull_request:
 
 concurrency:
   group: ${{ github.ref }}-pr
   cancel-in-progress: true
 
 permissions:
-  id-token: write
   actions: read
   checks: read
   contents: read
   pull-requests: read
-  statuses: write
-  deployments: write
 
 jobs:
+  linter:
+    name: 📐YAML & Python Lint
+    timeout-minutes: 5
+    runs-on: runners-set-amd64-small
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 20
+
+      - name: Get changed Python files
+        id: changed-files-python
+        uses: tj-actions/changed-files@v45.0.8
+        with:
+          files: |
+            **/*.py
+
+      - name: Get changed YAML files
+        id: changed-files-yaml
+        uses: tj-actions/changed-files@v45.0.8
+        with:
+          files: |
+            **/*.yaml
+            **/*.yml
+
+      - name: Setup uv
+        if: steps.changed-files-python.outputs.any_changed == 'true' || steps.changed-files-yaml.outputs.any_changed == 'true'
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.12'
+
+      # Plain pycodestyle/pyflakes only: the plugin set of dbt_improvado_clickhouse flags every
+      # pytest `assert` (S101) and the SQL f-strings of the tests (S608).
+      - name: Flake8 Lint
+        id: flake8
+        if: steps.changed-files-python.outputs.any_changed == 'true'
+        continue-on-error: true
+        run: |
+          uvx flake8 --max-line-length 120 --extend-ignore W503,W504 --show-source \
+            ${{ steps.changed-files-python.outputs.all_changed_files }}
+
+      - name: YAMLLint
+        id: yamllint
+        if: steps.changed-files-yaml.outputs.any_changed == 'true'
+        continue-on-error: true
+        run: |
+          uvx yamllint==1.29.0 --strict \
+            -d '{extends: relaxed, rules: {new-line-at-end-of-file: {level: warning}, trailing-spaces: {level: warning}, line-length: disable}}' \
+            ${{ steps.changed-files-yaml.outputs.all_changed_files }}
+
+      - name: Check lint results
+        if: always()
+        run: |
+          failed=()
+          [[ "${{ steps.flake8.outcome }}" == 'failure' ]] && failed+=('Flake8')
+          [[ "${{ steps.yamllint.outcome }}" == 'failure' ]] && failed+=('YAMLLint')
+          if [[ ${#failed[@]} -gt 0 ]]; then
+            echo "Failed linters: ${failed[*]}"
+            exit 1
+          fi
+
   run_tests:
     name: 🛠️Running tests
-    timeout-minutes: 10
-    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    runs-on: runners-set-amd64-small
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # dbt + ClickHouse (with the embedded Keeper) in docker compose; the throwaway
+      # credentials live in the committed .env
       - name: Build containers
-        run: docker compose up -d
+        run: docker compose up -d --build
 
       - name: Run tests
         run: docker exec -i dbt python -m pytest -rA tests/pytest/
 
       - name: Stop containers
-        run: docker compose down
+        if: always()
+        run: docker compose down -v
+
+  pull_request_checks_control:
+    name: 🔰Pull request checks control
+    needs: [linter, run_tests]
+    if: always()
+    timeout-minutes: 5
+    runs-on: runners-set-amd64-small
+    steps:
+      - name: Collecting jobs results
+        run: |
+          if [[ "${{ needs.linter.result }}" != 'success' ]]; then
+            echo 'Linter failed'
+            exit 1
+          elif [[ "${{ needs.run_tests.result }}" != 'success' ]]; then
+            echo 'Tests failed'
+            exit 1
+          fi

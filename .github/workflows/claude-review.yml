@@ -1,0 +1,24 @@
+name: Review PR
+on:
+  pull_request:
+
+# The Claude review approves the PR (claude[bot]) when it finds no critical issues; master
+# requires one approval and dismisses it on every new commit, so each push is reviewed again.
+jobs:
+  review:
+    uses: tekliner/reusable-workflows/.github/workflows/claude-code-review.yaml@master
+    with:
+      pr-number: ${{ github.event.pull_request.number }}
+      prompt-postfix: |
+
+        ---
+        This repository is the dbt package `dbt_improvado_utils`: macros and custom ClickHouse
+        materializations used by dbt_improvado_clickhouse, dbt_customer and other dbt projects,
+        which pin it by release tag.
+        - A change to `macros/materializations/` must come with a test in `tests/pytest/` that
+          fails without the change. If there is none, treat it as a critical issue and do not approve.
+        - Check that a change does not alter behaviour for models that do not use the new config:
+          every consumer gets it on the next tag bump.
+        - Check ClickHouse specifics: Replicated vs plain MergeTree, ON CLUSTER, partition and
+          part operations, settings passed per query.
+    secrets: inherit

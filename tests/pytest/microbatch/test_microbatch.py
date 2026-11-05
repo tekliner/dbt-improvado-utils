@@ -199,7 +199,9 @@ class TestMicrobatch:
         after = con.query_df(max_queries_query).iloc[0]
 
         assert after['partition_pinned'] - before['partition_pinned'] == 1, 'expected one partition-pinned max() query'
-        assert after['whole_table'] - before['whole_table'] == 0, 'whole-table max() must not run while the newest partition has rows'
+        assert after['whole_table'] - before['whole_table'] == 0, (
+            'whole-table max() must not run while the newest partition has rows'
+        )
 
         # delete every row of the newest partition with a lightweight DELETE: system.parts still
         # lists the partition with rows > 0, but the pinned max() sees nothing -> fallback
@@ -220,7 +222,9 @@ class TestMicrobatch:
         after = con.query_df(max_queries_query).iloc[0]
 
         assert after['partition_pinned'] - before['partition_pinned'] == 1
-        assert after['whole_table'] - before['whole_table'] == 1, 'expected the whole-table fallback after the newest partition was emptied'
+        assert after['whole_table'] - before['whole_table'] == 1, (
+            'expected the whole-table fallback after the newest partition was emptied'
+        )
 
         actual_rows = con.query_df(QUERY_COUNT_ROWS.format(table_name=MICROBATCH_TEST_MODEL))['rows_count'][0]
         expected_rows = con.query_df(QUERY_COUNT_ROWS.format(table_name=MICROBATCH_INPUT_MODEL))['rows_count'][0]
@@ -754,7 +758,8 @@ class TestMicrobatch:
         )
         con.command(f'drop table default.{helper}')
         con.command(
-            f"insert into default.{self.BASELINE_TABLE} (table, partition_id, rows, invocation_id, recorded_at, min_block) "
+            f"insert into default.{self.BASELINE_TABLE} "
+            f"(table, partition_id, rows, invocation_id, recorded_at, min_block) "
             f"select '{MICROBATCH_TEST_MODEL}', partition_id, sum(rows), 'test', now64(3), min(min_block_number) "
             f"from system.parts where database = 'default' and table = '{MICROBATCH_TEST_MODEL}' and active "
             f"and partition_id = '{partition_id}' and min_block_number >= {floor} group by partition_id"
@@ -996,9 +1001,14 @@ class TestMicrobatch:
         db = 'microbatch_replicated_test'
         table = f'{db}.{MICROBATCH_TEST_MODEL}'
         start = setup_test_environment['min_timestamp'].strftime("%Y-%m-%d")
-        dbt_vars = f"{{'materialization_start_date': '{start}', 'enabled': True, 'production_schema': '{db}', 'engine': 'ReplicatedMergeTree()'}}"
+        dbt_vars = (
+            f"{{'materialization_start_date': '{start}', 'enabled': True, "
+            f"'production_schema': '{db}', 'engine': 'ReplicatedMergeTree()'}}"
+        )
         con.command(f'drop database if exists {db} sync')
-        con.command(f"create database {db} engine = Replicated('/clickhouse/databases/{db}', '{{shard}}', '{{replica}}')")
+        con.command(
+            f"create database {db} engine = Replicated('/clickhouse/databases/{db}', '{{shard}}', '{{replica}}')"
+        )
         default_db = environ['CLICKHOUSE_DATABASE']
         environ['CLICKHOUSE_DATABASE'] = db
         try:
